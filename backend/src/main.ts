@@ -1,15 +1,25 @@
+import { Logger, ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import { ConfigService } from '@nestjs/config';
+import cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
+import { HttpExceptionFilter } from './common/filters/http-exception.filter';
+import { ResponseInterceptor } from './common/interceptors/response.interceptor';
+import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 
-// Phase 0 bootstrap — no business modules, guards, pipes, or gateways wired yet.
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
-  // TODO(phase1): enableHelmet(), enableCors(), setGlobalPrefix('api'),
-  //                useGlobalPipes(ValidationPipe), JWT auth guard, WebSocket adapter.
-  const port = process.env.PORT ?? 3000;
+  const config = app.get(ConfigService);
+  const port = config.get<number>('server.port') ?? 3000;
+
+  app.use(cookieParser());
+  app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
+  app.useGlobalFilters(new HttpExceptionFilter());
+  app.useGlobalInterceptors(new LoggingInterceptor(), new ResponseInterceptor());
+  app.setGlobalPrefix('api');
+
   await app.listen(port);
-  // eslint-disable-next-line no-console
-  console.log(`Backend listening on http://localhost:${port}`);
+  new Logger('Bootstrap').log(`Auth backend listening on http://localhost:${port}`);
 }
 
 void bootstrap();

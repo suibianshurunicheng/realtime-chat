@@ -69,9 +69,14 @@ npm run start:dev         # http://localhost:3000
 |---|---|---|
 | `PORT` | 后端端口 | `3000` |
 | `DB_HOST` / `DB_PORT` | MySQL | `localhost` / `3306` |
-| `DB_USER` / `DB_PASSWORD` / `DB_NAME` | 库账号 | `chat` / `changeme` / `realtime_chat` |
-| `REDIS_HOST` / `REDIS_PORT` | Redis | `localhost` / `6379` |
-| `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` | 双 token 密钥 | 自行生成强随机串 |
+| `DB_USER` / `DB_PASSWORD` / `DB_DATABASE` | 库账号 | `chat` / `changeme` / `realtime_chat` |
+| `REDIS_HOST` / `REDIS_PORT` / `REDIS_DB` | Redis | `localhost` / `6379` / `0` |
+| `JWT_ACCESS_SECRET` | access token 签名密钥 | 自行生成强随机串（`openssl rand -base64 48`） |
+| `JWT_ACCESS_EXPIRES_IN` | access token 有效期 | `15m` |
+| `JWT_REFRESH_EXPIRES_IN_DAYS` | 刷新令牌有效期（Redis TTL） | `7` |
+| `REFRESH_COOKIE_NAME` / `REFRESH_COOKIE_SECURE` | 刷新令牌 Cookie 名 / 是否仅 HTTPS | `rtc_refresh` / `false`（开发） |
+
+> **设计要点（决策 D3）**：刷新令牌是**不透明随机串**，仅将其 SHA-256 哈希存入 Redis（`auth:refresh:{userId}`，TTL = 刷新有效期）；原文通过 **httpOnly** Cookie 下发，**不存在** `JWT_REFRESH_SECRET`。数据库密码使用 bcrypt，密钥仅用于 access token。
 
 > 生成密钥示例：`openssl rand -base64 48`（Windows 可用 Git Bash）。
 
@@ -90,6 +95,9 @@ npm run start:dev         # http://localhost:3000
 # 后端类型检查 / 构建
 cd backend && npm run build
 
+# 后端端到端测试（Phase 1 认证）
+cd backend && npm run test:e2e
+
 # 前端构建
 cd frontend && npm run build
 
@@ -97,3 +105,20 @@ cd frontend && npm run build
 sudo service mysql stop
 sudo service redis-server stop
 ```
+
+## 7. Phase 1 端到端测试（e2e）
+
+`backend/test/auth.e2e-spec.ts` 覆盖 7 个场景：注册成功、重复注册 409、登录成功、密码错误 401、Cookie 刷新 token、登出使刷新失效、未授权访问 `/users/me`。
+
+前置：WSL2 中 MySQL 与 Redis 已启动，并存在专用测试库（与开发库隔离）：
+
+```bash
+# WSL2 中建测试库
+sudo mysql -e "CREATE DATABASE realtime_chat_test CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+
+# 在 Windows 侧 backend/ 运行（指定测试库与 Redis DB，避免污染开发数据）
+cd backend
+DB_DATABASE=realtime_chat_test REDIS_DB=1 npm run test:e2e
+```
+
+> e2e 走真实 MySQL（synchronize 自动建表）+ 真实 Redis；测试库通过 `DB_DATABASE` 覆盖，Redis 通过 `REDIS_DB` 隔离。CI/本机均依赖 WSL2 中间件。
