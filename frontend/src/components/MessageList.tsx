@@ -20,7 +20,10 @@ export function MessageList({ messages, currentUserId }: { messages: Message[]; 
           <div key={m.id} className="msg-row" data-mine={mine ? 'true' : 'false'}>
             <div className="msg-bubble">
               <div className="msg-content">{m.content}</div>
-              <div className="msg-time">{formatTime(m.createdAt)}</div>
+              <div className="msg-meta">
+                <span className="msg-time">{formatTime(m.createdAt)}</span>
+                {mine && m.readAt && <span className="msg-read">已读</span>}
+              </div>
             </div>
           </div>
         );

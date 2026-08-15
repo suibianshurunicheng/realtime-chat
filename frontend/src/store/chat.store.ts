@@ -21,6 +21,13 @@ interface ChatState {
   setLastMessage: (convId: string, message: Message | null) => void;
   prependMessages: (convId: string, older: Message[]) => void;
   appendMessage: (msg: Message) => void;
+  /** Phase 3.4: apply a read receipt (sender-view "已读"). */
+  applyReadReceipt: (p: {
+    conversationId: string;
+    readerId: string;
+    upToMessageId: string | null;
+    readAt: string;
+  }) => void;
   markHasMore: (convId: string, hasMore: boolean) => void;
   setLoadingConversations: (v: boolean) => void;
   setLoadingMessages: (v: boolean) => void;
@@ -92,6 +99,24 @@ export const useChatStore = create<ChatState>((set) => ({
         unreadByConv,
         lastMessageByConv: { ...s.lastMessageByConv, [msg.conversationId]: msg },
       };
+    }),
+
+  applyReadReceipt: ({ conversationId, readerId, upToMessageId, readAt }) =>
+    set((s) => {
+      const list = s.messagesByConv[conversationId];
+      if (!list || list.length === 0) return s;
+      // bigint ids compared numerically (never as strings). null upTo = all unread.
+      const upTo = upToMessageId != null ? BigInt(upToMessageId) : null;
+      let changed = false;
+      const next = list.map((m) => {
+        if (m.readAt) return m; // already read — skip (idempotent)
+        if (m.senderId === readerId) return m; // reader's own message is never "read by them"
+        if (upTo != null && BigInt(m.id) > upTo) return m; // beyond the receipt
+        changed = true;
+        return { ...m, readAt };
+      });
+      if (!changed) return s;
+      return { messagesByConv: { ...s.messagesByConv, [conversationId]: next } };
     }),
 
   markHasMore: (convId, hasMore) =>

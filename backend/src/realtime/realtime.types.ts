@@ -36,3 +36,9 @@ export const TYPING_STOP_EVENT = 'typing_stop';
 
 /** Server -> Client: someone's typing state changed in a conversation room. */
 export const TYPING_CHANGED_EVENT = 'typing_changed';
+
+/** Client -> Server: the user read messages in `conversationId` up to `upToMessageId`. */
+export const READ_MESSAGES_EVENT = 'read_messages';
+
+/** Server -> Client: a read receipt — `byUserId` read the OTHER party's messages. */
+export const MESSAGES_READ_EVENT = 'messages_read';

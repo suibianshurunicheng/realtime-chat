@@ -22,6 +22,7 @@ const msg = (id: string, conversationId = 'c1', senderId = '2'): Message => ({
   type: 'text',
   content: 'hi',
   createdAt: new Date().toISOString(),
+  readAt: null,
 });
 
 describe('chat store', () => {

@@ -189,6 +189,38 @@ export class ConversationsService {
     return this.messages.save(msg);
   }
 
+  /**
+   * Phase 3.4: mark all of the OTHER party's messages in `conversationId` as
+   * read up to (and including) `upToMessageId` (or every unread one if omitted).
+   * Only rows where `senderId != me` are touched — a user can NEVER mark their
+   * OWN messages read (constraint: direction is enforced server-side). `readAt`
+   * is always server-generated (`new Date()`), never trusted from the client.
+   * Idempotent: re-marking hits `WHERE readAt IS NULL`, so duplicates are no-ops.
+   * Membership is asserted first (403 if not a member, 404 if missing).
+   */
+  async markRead(
+    me: string,
+    conversationId: string,
+    upToMessageId?: string,
+  ): Promise<{ readAt: Date; conversationId: string; byUserId: string; upToMessageId: string | null }> {
+    await this.assertMember(conversationId, me);
+    const readAt = new Date();
+    const qb = this.messages
+      .createQueryBuilder()
+      .update(Message)
+      .set({ readAt })
+      .where('conversationId = :cid', { cid: conversationId })
+      .andWhere('senderId != :me', { me })
+      .andWhere('readAt IS NULL');
+    if (upToMessageId) {
+      // `id` is bigint; passed as a bound param so MySQL compares numerically,
+      // never as a string. Mirrors the existing `m.id < :before` pagination.
+      qb.andWhere('id <= :upTo', { upTo: upToMessageId });
+    }
+    await qb.execute();
+    return { readAt, conversationId, byUserId: me, upToMessageId: upToMessageId ?? null };
+  }
+
   async isMember(conversationId: string, userId: string): Promise<boolean> {
     const m = await this.members.findOne({
       where: { conversationId, userId },

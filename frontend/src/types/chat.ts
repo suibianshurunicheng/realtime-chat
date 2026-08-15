@@ -17,6 +17,8 @@ export interface Message {
   type: 'text';
   content: string;
   createdAt: string;
+  /** Recipient read time (ISO string) or null = unread. Phase 3.4. */
+  readAt: string | null;
 }
 
 /** Mirrors backend presence payload `{ userId, online }`. */
