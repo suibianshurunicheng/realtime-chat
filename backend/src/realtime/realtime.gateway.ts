@@ -21,11 +21,14 @@ import { FriendsService } from '../friends/friends.service';
 import { PresenceService } from './presence.service';
 import { TokenSocketRegistry } from './token-socket.registry';
 import { Message } from '../conversations/entities/message.entity';
+import { toMessageView } from '../conversations/message.view';
 import { AppConfig } from '../config/configuration';
 import {
   SocketUser,
+  ErrorEnvelope,
   conversationRoom,
   userRoom,
+  SEND_MESSAGE_EVENT,
   MESSAGE_CREATED_EVENT,
   MESSAGE_ERROR_EVENT,
   PRESENCE_CHANGED_EVENT,
@@ -46,11 +49,6 @@ interface AccessPayload {
   jti: string;
   sid: string;
   exp?: number;
-}
-
-interface ErrorEnvelope {
-  code: number;
-  message: string;
 }
 
 /**
@@ -248,16 +246,14 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     try {
       const ids = await this.conversations.listConversationIds(userId);
       for (const id of ids) {
-        // The leaving socket may already be out of the room; `.except` is a
-        // harmless no-op then — every other peer in the room still gets the reset.
-        this.server
-          .to(conversationRoom(id))
-          .except(socketId)
-          .emit(TYPING_CHANGED_EVENT, {
-            conversationId: id,
-            userId,
-            typing: false,
-          });
+      // The leaving socket may already be out of the room; `.except` is a
+      // harmless no-op then — every other peer in the room still gets the reset.
+      this.broadcastToRoom(
+        id,
+        TYPING_CHANGED_EVENT,
+        { conversationId: id, userId, typing: false },
+        { excludeSelf: socketId },
+      );
       }
     } catch (err) {
       this.logger.error(
@@ -277,21 +273,47 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     }
   }
 
-  @SubscribeMessage('send_message')
+  /**
+   * Broadcast `event` with `payload` to a single conversation room. The ONLY
+   * room kind handled here is `conversation:${id}` — presence (`user:${uid}`),
+   * the initial `friend_presence_snapshot`, and direct `message_error` client
+   * emits are deliberately out of scope (different targets / different rules).
+   *
+   * `excludeSelf` drops one socket (the originating client) from the broadcast.
+   * A `Socket` is resolved by its id; a raw socket id (string) keeps the
+   * disconnect path's minimal-change call signature working.
+   */
+  private broadcastToRoom(
+    conversationId: string,
+    event: string,
+    payload: unknown,
+    opts?: { excludeSelf?: Socket | string },
+  ): void {
+    const room = this.server.to(conversationRoom(conversationId));
+    if (opts?.excludeSelf !== undefined) {
+      const selfId =
+        typeof opts.excludeSelf === 'string' ? opts.excludeSelf : opts.excludeSelf.id;
+      room.except(selfId).emit(event, payload);
+      return;
+    }
+    room.emit(event, payload);
+  }
+
+  @SubscribeMessage(SEND_MESSAGE_EVENT)
   async onSendMessage(
     @ConnectedSocket() client: Socket,
     @MessageBody() body: unknown,
   ): Promise<void> {
     const user = client.data.user as SocketUser | undefined;
     if (!user) {
-      client.emit(MESSAGE_ERROR_EVENT, { code: 401, message: '未认证' } as ErrorEnvelope);
+      client.emit(MESSAGE_ERROR_EVENT, { code: 401, message: '未认证' });
       return;
     }
 
     const dto = plainToInstance(SendSocketMessageDto, body ?? {});
     const errors = await validate(dto);
     if (errors.length > 0) {
-      client.emit(MESSAGE_ERROR_EVENT, { code: 400, message: '消息格式非法' } as ErrorEnvelope);
+      client.emit(MESSAGE_ERROR_EVENT, { code: 400, message: '消息格式非法' });
       return;
     }
 
@@ -304,17 +326,8 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       return;
     }
 
-    const payload = {
-      id: msg.id,
-      conversationId: msg.conversationId,
-      senderId: msg.senderId,
-      type: msg.type,
-      content: msg.content,
-      createdAt: msg.createdAt,
-      readAt: msg.readAt,
-    };
-    // Broadcast to the room — sender included, so A and B receive the identical event.
-    this.server.to(conversationRoom(dto.conversationId)).emit(MESSAGE_CREATED_EVENT, payload);
+    // Single serialization point — sender included, so A and B receive the identical event.
+    this.broadcastToRoom(dto.conversationId, MESSAGE_CREATED_EVENT, toMessageView(msg));
   }
 
   /**
@@ -331,14 +344,14 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
   ): Promise<void> {
     const user = client.data.user as SocketUser | undefined;
     if (!user) {
-      client.emit(MESSAGE_ERROR_EVENT, { code: 401, message: '未认证' } as ErrorEnvelope);
+      client.emit(MESSAGE_ERROR_EVENT, { code: 401, message: '未认证' });
       return;
     }
 
     const dto = plainToInstance(ReadMessagesDto, body ?? {});
     const errors = await validate(dto);
     if (errors.length > 0) {
-      client.emit(MESSAGE_ERROR_EVENT, { code: 400, message: '消息格式非法' } as ErrorEnvelope);
+      client.emit(MESSAGE_ERROR_EVENT, { code: 400, message: '消息格式非法' });
       return;
     }
 
@@ -359,10 +372,9 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     };
     // Only the sender of the read messages (the other party) should receive the
     // receipt — the caller who triggered it must not see its own echo.
-    this.server
-      .to(conversationRoom(dto.conversationId))
-      .except(client.id)
-      .emit(MESSAGES_READ_EVENT, payload);
+    this.broadcastToRoom(dto.conversationId, MESSAGES_READ_EVENT, payload, {
+      excludeSelf: client,
+    });
   }
 
   /**
@@ -413,10 +425,9 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     };
     // Broadcast to the room minus the sender. A non-member room join is impossible
     // here because only members were joined to `conversationRoom` at connect time.
-    this.server
-      .to(conversationRoom(dto.conversationId))
-      .except(client.id)
-      .emit(TYPING_CHANGED_EVENT, payload);
+    this.broadcastToRoom(dto.conversationId, TYPING_CHANGED_EVENT, payload, {
+      excludeSelf: client,
+    });
   }
 
   private toErrorEnvelope(err: unknown): ErrorEnvelope {
@@ -431,7 +442,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       return { code: status, message };
     }
     this.logger.error(
-      `unhandled send_message error: ${err instanceof Error ? err.stack : String(err)}`,
+      `unhandled realtime error: ${err instanceof Error ? err.stack : String(err)}`,
     );
     return { code: 500, message: '服务器内部错误' };
   }

@@ -2,14 +2,14 @@ import { io, type Socket } from 'socket.io-client';
 import { useChatStore } from '../store/chat.store';
 import { usePresenceStore } from '../store/presence.store';
 import { useTypingStore } from '../store/typing.store';
-import type { Message, TypingPayload } from '../types/chat';
-
-interface ReadReceiptPayload {
-  conversationId: string;
-  byUserId: string;
-  upToMessageId: string | null;
-  readAt: string;
-}
+import type {
+  Message,
+  TypingPayload,
+  ReadReceiptPayload,
+  SocketErrorPayload,
+  FriendPresenceSnapshotPayload,
+  PresenceUser,
+} from '../types/chat';
 
 /**
  * Module-level Socket.IO singleton. One socket per logged-in session — never
@@ -24,11 +24,6 @@ interface ReadReceiptPayload {
 
 let socket: Socket | null = null;
 
-interface SocketError {
-  code: number;
-  message: string;
-}
-
 function attach(s: Socket): void {
   const chat = useChatStore.getState;
   const presence = usePresenceStore.getState;
@@ -40,14 +35,14 @@ function attach(s: Socket): void {
   s.off('reconnect').on('reconnect', () => presence().setConnection('connected'));
 
   s.off('message_created').on('message_created', (msg: Message) => chat().appendMessage(msg));
-  s.off('message_error').on('message_error', (err: SocketError) => {
+  s.off('message_error').on('message_error', (err: SocketErrorPayload) => {
     chat().setError(err?.message ?? '发送失败');
   });
 
-  s.off('friend_presence_snapshot').on('friend_presence_snapshot', (p: { users?: { userId: string; online: boolean }[] }) => {
+  s.off('friend_presence_snapshot').on('friend_presence_snapshot', (p: FriendPresenceSnapshotPayload) => {
     presence().applySnapshot(p?.users ?? []);
   });
-  s.off('presence_changed').on('presence_changed', (p: { userId: string; online: boolean }) => {
+  s.off('presence_changed').on('presence_changed', (p: PresenceUser) => {
     presence().setPresence(p.userId, p.online);
   });
 
