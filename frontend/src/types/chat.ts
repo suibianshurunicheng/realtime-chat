@@ -34,6 +34,25 @@ export interface TypingPayload {
   typing: boolean;
 }
 
+/** Mirrors backend `ReadReceiptPayload` (realtime `messages_read` event). */
+export interface ReadReceiptPayload {
+  conversationId: string;
+  byUserId: string;
+  upToMessageId: string | null;
+  readAt: string;
+}
+
+/** Mirrors backend `ErrorEnvelope` (realtime `message_error` event). */
+export interface SocketErrorPayload {
+  code: number;
+  message: string;
+}
+
+/** Mirrors backend `friend_presence_snapshot` payload (realtime gateway). */
+export interface FriendPresenceSnapshotPayload {
+  users?: PresenceUser[];
+}
+
 export type ConnectionStatus = 'idle' | 'connecting' | 'connected' | 'disconnected';
 
 /** Mirrors backend `FriendRequestStatus`. */
