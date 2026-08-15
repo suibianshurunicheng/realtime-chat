@@ -27,3 +27,12 @@ export const PRESENCE_CHANGED_EVENT = 'presence_changed';
 
 /** Sent once to a socket right after connect: the online state of that user's friends. */
 export const FRIEND_PRESENCE_SNAPSHOT_EVENT = 'friend_presence_snapshot';
+
+/** Client -> Server: the user started typing in `conversationId`. */
+export const TYPING_START_EVENT = 'typing_start';
+
+/** Client -> Server: the user stopped typing in `conversationId`. */
+export const TYPING_STOP_EVENT = 'typing_stop';
+
+/** Server -> Client: someone's typing state changed in a conversation room. */
+export const TYPING_CHANGED_EVENT = 'typing_changed';

@@ -30,8 +30,12 @@ import {
   MESSAGE_ERROR_EVENT,
   PRESENCE_CHANGED_EVENT,
   FRIEND_PRESENCE_SNAPSHOT_EVENT,
+  TYPING_START_EVENT,
+  TYPING_STOP_EVENT,
+  TYPING_CHANGED_EVENT,
 } from './realtime.types';
 import { SendSocketMessageDto } from './dto/send-socket-message.dto';
+import { TypingDto } from './dto/typing.dto';
 
 interface AccessPayload {
   sub: string;
@@ -225,6 +229,38 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     if (result.changed) {
       void this.broadcastPresence(user.sub, false);
     }
+
+    // Third-layer typing cleanup: a socket leaving (tab close / network drop /
+    // logout) must never leave a peer stuck on "对方正在输入...". Broadcast
+    // `typing:false` for the user across every conversation they were in. The
+    // receiver's own 6s timeout is the backup; this is the authoritative signal.
+    // Failure here must never block the disconnect path above.
+    void this.broadcastTypingStopOnDisconnect(user.sub, client.id);
+  }
+
+  private async broadcastTypingStopOnDisconnect(
+    userId: string,
+    socketId: string,
+  ): Promise<void> {
+    try {
+      const ids = await this.conversations.listConversationIds(userId);
+      for (const id of ids) {
+        // The leaving socket may already be out of the room; `.except` is a
+        // harmless no-op then — every other peer in the room still gets the reset.
+        this.server
+          .to(conversationRoom(id))
+          .except(socketId)
+          .emit(TYPING_CHANGED_EVENT, {
+            conversationId: id,
+            userId,
+            typing: false,
+          });
+      }
+    } catch (err) {
+      this.logger.error(
+        `broadcastTypingStopOnDisconnect failed userId=${userId}: ${err instanceof Error ? err.stack : String(err)}`,
+      );
+    }
   }
 
   /** Notify each of `userId`'s friends via their personal room. Only currently
@@ -275,6 +311,60 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     };
     // Broadcast to the room — sender included, so A and B receive the identical event.
     this.server.to(conversationRoom(dto.conversationId)).emit(MESSAGE_CREATED_EVENT, payload);
+  }
+
+  /**
+   * Client -> Server: the user started/stopped typing. Ephemeral state only —
+   * never persisted. We confirm socket identity (`client.data.user`), validate
+   * the payload, and check conversation membership before broadcasting a
+   * `typing_changed` event to every OTHER socket in the conversation room.
+   * `except(client.id)` guarantees the sender never receives its own echo.
+   */
+  @SubscribeMessage(TYPING_START_EVENT)
+  async onTypingStart(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() body: unknown,
+  ): Promise<void> {
+    await this.broadcastTyping(client, body, true);
+  }
+
+  @SubscribeMessage(TYPING_STOP_EVENT)
+  async onTypingStop(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() body: unknown,
+  ): Promise<void> {
+    await this.broadcastTyping(client, body, false);
+  }
+
+  private async broadcastTyping(
+    client: Socket,
+    body: unknown,
+    typing: boolean,
+  ): Promise<void> {
+    const user = client.data.user as SocketUser | undefined;
+    if (!user) return;
+
+    const dto = plainToInstance(TypingDto, body ?? {});
+    const errors = await validate(dto);
+    if (errors.length > 0) return;
+
+    // Membership is enforced against the verified identity — the client is never
+    // trusted to declare whose typing state it broadcasts.
+    if (!(await this.conversations.isMember(dto.conversationId, user.sub))) {
+      return;
+    }
+
+    const payload = {
+      conversationId: dto.conversationId,
+      userId: user.sub,
+      typing,
+    };
+    // Broadcast to the room minus the sender. A non-member room join is impossible
+    // here because only members were joined to `conversationRoom` at connect time.
+    this.server
+      .to(conversationRoom(dto.conversationId))
+      .except(client.id)
+      .emit(TYPING_CHANGED_EVENT, payload);
   }
 
   private toErrorEnvelope(err: unknown): ErrorEnvelope {
