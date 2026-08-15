@@ -3,6 +3,14 @@ node_modules/
 .pnp/
 .pnp.js
 
+# ===== npm cache (sandbox install workaround) =====
+frontend/.npmcache/
+
+# ===== Frontend build output (vite/tsc emit artifacts) =====
+frontend/vite.config.js
+frontend/vite.config.d.ts
+frontend/vite.config.js.timestamp-*.mjs
+
 # ===== Build output =====
 dist/
 build/

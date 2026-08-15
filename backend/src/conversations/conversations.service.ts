@@ -189,7 +189,7 @@ export class ConversationsService {
     return this.messages.save(msg);
   }
 
-  private async isMember(conversationId: string, userId: string): Promise<boolean> {
+  async isMember(conversationId: string, userId: string): Promise<boolean> {
     const m = await this.members.findOne({
       where: { conversationId, userId },
     });
