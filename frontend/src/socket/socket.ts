@@ -4,6 +4,13 @@ import { usePresenceStore } from '../store/presence.store';
 import { useTypingStore } from '../store/typing.store';
 import type { Message, TypingPayload } from '../types/chat';
 
+interface ReadReceiptPayload {
+  conversationId: string;
+  byUserId: string;
+  upToMessageId: string | null;
+  readAt: string;
+}
+
 /**
  * Module-level Socket.IO singleton. One socket per logged-in session — never
  * recreated when switching conversations (see useChatSocket). All server events
@@ -51,6 +58,18 @@ function attach(s: Socket): void {
     if (!p?.conversationId || !p?.userId) return;
     useTypingStore.getState().setTyping(p.conversationId, p.typing ? p.userId : null);
   });
+
+  // Read receipts (Phase 3.4): the OTHER user read our messages. Mark our own
+  // messages (senderId !== byUserId) read up to `upToMessageId` in the store.
+  s.off('messages_read').on('messages_read', (p: ReadReceiptPayload) => {
+    if (!p?.conversationId || !p?.byUserId) return;
+    chat().applyReadReceipt({
+      conversationId: p.conversationId,
+      readerId: p.byUserId,
+      upToMessageId: p.upToMessageId ?? null,
+      readAt: typeof p.readAt === 'string' ? p.readAt : new Date().toISOString(),
+    });
+  });
 }
 
 /** Connect (idempotent singleton). Returns the existing socket if already created. */
@@ -96,4 +115,12 @@ export function emitTypingStart(conversationId: string): void {
 export function emitTypingStop(conversationId: string): void {
   if (!socket) return;
   socket.emit('typing_stop', { conversationId });
+}
+
+/** Phase 3.4: tell the server we've read messages in `conversationId` up to
+ *  (and including) `upToMessageId`. The server marks only the other party's
+ *  messages read and broadcasts the receipt back to them. */
+export function emitRead(conversationId: string, upToMessageId?: string): void {
+  if (!socket) return;
+  socket.emit('read_messages', { conversationId, upToMessageId });
 }

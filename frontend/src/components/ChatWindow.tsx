@@ -4,7 +4,7 @@ import { usePresenceStore } from '../store/presence.store';
 import { useAuthStore } from '../store/auth.store';
 import { useTypingStore } from '../store/typing.store';
 import { getMessages } from '../api/conversations.api';
-import { sendSocketMessage } from '../socket/socket';
+import { sendSocketMessage, emitRead } from '../socket/socket';
 import { MessageList } from './MessageList';
 import { MessageInput } from './MessageInput';
 import { PresenceDot } from './PresenceDot';
@@ -100,6 +100,22 @@ export function ChatWindow({ conversation }: { conversation: ConversationView | 
     setError(null);
     sendSocketMessage(conversation.id, content);
   };
+
+  // Phase 3.4: mark the OTHER party's unread messages as read whenever we are
+  // actively viewing this conversation and there's something unread from them.
+  // Covers both "opened the chat" and "received a new message while open".
+  // Idempotent — the server only touches rows with readAt IS NULL, so re-firing
+  // (e.g. when a receipt updates our own messages) is a harmless no-op.
+  useEffect(() => {
+    if (!conversation) return;
+    const list = messages ?? [];
+    const hasUnreadFromOther = list.some(
+      (m) => m.senderId !== currentUserId && !m.readAt,
+    );
+    if (!hasUnreadFromOther) return;
+    const lastId = list[list.length - 1]?.id;
+    if (lastId) emitRead(conversation.id, lastId);
+  }, [messages, conversation?.id, currentUserId]);
 
   if (!conversation) {
     return <div className="chat-empty">选择一个会话开始聊天</div>;

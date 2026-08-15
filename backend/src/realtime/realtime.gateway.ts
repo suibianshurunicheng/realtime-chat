@@ -33,9 +33,12 @@ import {
   TYPING_START_EVENT,
   TYPING_STOP_EVENT,
   TYPING_CHANGED_EVENT,
+  READ_MESSAGES_EVENT,
+  MESSAGES_READ_EVENT,
 } from './realtime.types';
 import { SendSocketMessageDto } from './dto/send-socket-message.dto';
 import { TypingDto } from './dto/typing.dto';
+import { ReadMessagesDto } from './dto/read-messages.dto';
 
 interface AccessPayload {
   sub: string;
@@ -308,9 +311,58 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       type: msg.type,
       content: msg.content,
       createdAt: msg.createdAt,
+      readAt: msg.readAt,
     };
     // Broadcast to the room — sender included, so A and B receive the identical event.
     this.server.to(conversationRoom(dto.conversationId)).emit(MESSAGE_CREATED_EVENT, payload);
+  }
+
+  /**
+   * Client -> Server: the user has read messages in `conversationId` up to (and
+   * including) `upToMessageId` (or all unread if omitted). We mark only the OTHER
+   * party's messages as read (never the caller's own) using a server timestamp,
+   * then broadcast `messages_read` to the room MINUS the caller so the sender of
+   * those messages sees the receipt. Re-marking is a no-op (`WHERE readAt IS NULL`).
+   */
+  @SubscribeMessage(READ_MESSAGES_EVENT)
+  async onReadMessages(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() body: unknown,
+  ): Promise<void> {
+    const user = client.data.user as SocketUser | undefined;
+    if (!user) {
+      client.emit(MESSAGE_ERROR_EVENT, { code: 401, message: '未认证' } as ErrorEnvelope);
+      return;
+    }
+
+    const dto = plainToInstance(ReadMessagesDto, body ?? {});
+    const errors = await validate(dto);
+    if (errors.length > 0) {
+      client.emit(MESSAGE_ERROR_EVENT, { code: 400, message: '消息格式非法' } as ErrorEnvelope);
+      return;
+    }
+
+    let result;
+    try {
+      // Single shared path with REST: membership + direction + persistence.
+      result = await this.conversations.markRead(user.sub, dto.conversationId, dto.upToMessageId);
+    } catch (err) {
+      client.emit(MESSAGE_ERROR_EVENT, this.toErrorEnvelope(err));
+      return;
+    }
+
+    const payload = {
+      conversationId: result.conversationId,
+      byUserId: result.byUserId,
+      upToMessageId: result.upToMessageId,
+      readAt: result.readAt,
+    };
+    // Only the sender of the read messages (the other party) should receive the
+    // receipt — the caller who triggered it must not see its own echo.
+    this.server
+      .to(conversationRoom(dto.conversationId))
+      .except(client.id)
+      .emit(MESSAGES_READ_EVENT, payload);
   }
 
   /**

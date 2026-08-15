@@ -498,6 +498,24 @@ a {
   text-align: right;
 }
 
+.msg-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.msg-read {
+  font-size: 11px;
+  opacity: 0.75;
+  color: #9aa1b1;
+}
+
+.msg-row[data-mine='true'] .msg-read {
+  color: rgba(255, 255, 255, 0.85);
+}
+
 .msg-input {
   display: flex;
   gap: 10px;

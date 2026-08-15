@@ -12,6 +12,7 @@ import { Request } from 'express';
 import { ConversationsService } from './conversations.service';
 import { CreateDirectDto } from './dto/create-direct.dto';
 import { SendMessageDto } from './dto/send-message.dto';
+import { MarkReadDto } from './dto/mark-read.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 
 @Controller('conversations')
@@ -56,5 +57,17 @@ export class ConversationsController {
   @Post(':id/messages')
   send(@Req() req: Request, @Param('id') id: string, @Body() dto: SendMessageDto) {
     return this.conversations.sendMessage(this.me(req), id, dto.content);
+  }
+
+  /** Phase 3.4 read receipt (REST fallback; the socket is the primary path).
+   *  Marks the OTHER party's messages as read; returns the applied `readAt`.
+   *  No socket broadcast here — the sender learns via the next `getMessages`. */
+  @Post(':id/read')
+  markRead(
+    @Req() req: Request,
+    @Param('id') id: string,
+    @Body() dto: MarkReadDto,
+  ) {
+    return this.conversations.markRead(this.me(req), id, dto.upToMessageId);
   }
 }

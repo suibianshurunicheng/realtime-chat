@@ -13,6 +13,11 @@ export type MessageType = 'text';
  *
  * FK conversationId -> conversations, FK senderId -> users. The (conversationId,
  * created_at) index supports cursor-based history pagination.
+ *
+ * `readAt` (Phase 3.4, nullable) records when the message's RECIPIENT first read
+ * it. In a 1:1 conversation the recipient is exactly the non-sender member, so a
+ * single column suffices — no `message_reads` table. Null = unread. Server-
+ * generated only (never trusted from the client).
  */
 @Entity('messages')
 export class Message {
@@ -33,4 +38,8 @@ export class Message {
 
   @CreateDateColumn({ type: 'datetime', name: 'created_at' })
   createdAt: Date;
+
+  /** Recipient read timestamp (set by ConversationsService.markRead). Null = unread. */
+  @Column({ type: 'datetime', name: 'read_at', nullable: true })
+  readAt: Date | null;
 }
