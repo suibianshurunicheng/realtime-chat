@@ -18,6 +18,15 @@ export type MessageType = 'text';
  * it. In a 1:1 conversation the recipient is exactly the non-sender member, so a
  * single column suffices — no `message_reads` table. Null = unread. Server-
  * generated only (never trusted from the client).
+ *
+ * `recalledAt` / `editedAt` (Phase 3.5, nullable) are server-generated markers:
+ * - recalledAt != null  -> the sender recalled the message. `content` KEEPS the
+ *   original text in the DB (audit), but every public projection must blank it
+ *   out (see `toMessageView`) so no transport can leak it.
+ * - editedAt != null    -> the sender edited the message in place; `content`
+ *   holds the latest text. No edit history is stored (by design).
+ * Neither has a time window (recall/edit are allowed forever) and neither is
+ * indexed (both are read as part of an already-located row).
  */
 @Entity('messages')
 export class Message {
@@ -42,4 +51,16 @@ export class Message {
   /** Recipient read timestamp (set by ConversationsService.markRead). Null = unread. */
   @Column({ type: 'datetime', name: 'read_at', nullable: true })
   readAt: Date | null;
+
+  /**
+   * Recall timestamp (set by ConversationsService.recallMessage). Null = not
+   * recalled. Original `content` is deliberately preserved in the DB; public
+   * views blank it.
+   */
+  @Column({ type: 'datetime', name: 'recalled_at', nullable: true })
+  recalledAt: Date | null;
+
+  /** Last edit timestamp (set by ConversationsService.editMessage). Null = never edited. */
+  @Column({ type: 'datetime', name: 'edited_at', nullable: true })
+  editedAt: Date | null;
 }

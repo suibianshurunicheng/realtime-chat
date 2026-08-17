@@ -4,7 +4,12 @@ import { usePresenceStore } from '../store/presence.store';
 import { useAuthStore } from '../store/auth.store';
 import { useTypingStore } from '../store/typing.store';
 import { getMessages } from '../api/conversations.api';
-import { sendSocketMessage, emitRead } from '../socket/socket';
+import {
+  sendSocketMessage,
+  emitRead,
+  emitRecallMessage,
+  emitEditMessage,
+} from '../socket/socket';
 import { MessageList } from './MessageList';
 import { MessageInput } from './MessageInput';
 import { PresenceDot } from './PresenceDot';
@@ -101,6 +106,21 @@ export function ChatWindow({ conversation }: { conversation: ConversationView | 
     sendSocketMessage(conversation.id, content);
   };
 
+  // Phase 3.5: recall / edit are emit-only. The store is updated exclusively by
+  // the `message_recalled` / `message_edited` broadcasts (which include us), so
+  // what we render is always what the server actually applied.
+  const onRecall = (messageId: string) => {
+    if (!conversation) return;
+    setError(null);
+    emitRecallMessage(conversation.id, messageId);
+  };
+
+  const onEditMessage = (messageId: string, content: string) => {
+    if (!conversation) return;
+    setError(null);
+    emitEditMessage(conversation.id, messageId, content);
+  };
+
   // Phase 3.4: mark the OTHER party's unread messages as read whenever we are
   // actively viewing this conversation and there's something unread from them.
   // Covers both "opened the chat" and "received a new message while open".
@@ -139,7 +159,12 @@ export function ChatWindow({ conversation }: { conversation: ConversationView | 
         ) : (
           <>
             {hasMore && <div className="chat-hint">{loadingOlder ? '加载更早消息…' : '向上滚动加载更早消息'}</div>}
-            <MessageList messages={list} currentUserId={currentUserId} />
+            <MessageList
+              messages={list}
+              currentUserId={currentUserId}
+              onRecall={onRecall}
+              onEdit={onEditMessage}
+            />
           </>
         )}
       </div>

@@ -11,6 +11,7 @@ import { Friendship } from '../friends/entities/friendship.entity';
 import { Conversation, ConversationType } from './entities/conversation.entity';
 import { ConversationMember } from './entities/conversation-member.entity';
 import { Message } from './entities/message.entity';
+import { MessageView, toMessageView } from './message.view';
 import type { PublicUser } from '../users/users.service';
 
 export interface ConversationView {
@@ -23,6 +24,9 @@ export interface ConversationView {
 
 const MAX_PAGE_LIMIT = 50;
 const DEFAULT_PAGE_LIMIT = 30;
+/** Same bounds the send path enforces (SendMessageDto / SendSocketMessageDto). */
+const MIN_CONTENT_LENGTH = 1;
+const MAX_CONTENT_LENGTH = 2000;
 
 @Injectable()
 export class ConversationsService {
@@ -147,13 +151,20 @@ export class ConversationsService {
     return this.buildView(conv);
   }
 
-  /** Cursor-paginated history (oldest first within the page). `before` is a message id. */
+  /**
+   * Cursor-paginated history (oldest first within the page). `before` is a message id.
+   *
+   * Phase 3.5: projects through `toMessageView` instead of returning raw entities,
+   * so REST history obeys the exact same wire shape as the Socket broadcasts —
+   * and, critically, so a RECALLED message's original text is redacted here too
+   * (a client reloading history must not be able to read it back).
+   */
   async getMessages(
     me: string,
     conversationId: string,
     limit?: string,
     before?: string,
-  ): Promise<Message[]> {
+  ): Promise<MessageView[]> {
     await this.assertMember(conversationId, me);
     const take = Math.min(Math.max(parseInt(limit ?? '', 10) || DEFAULT_PAGE_LIMIT, 1), MAX_PAGE_LIMIT);
     const qb = this.messages
@@ -167,7 +178,7 @@ export class ConversationsService {
       .limit(take)
       .getMany();
     rows.reverse(); // ascending (chronological) for stable rendering
-    return rows;
+    return rows.map(toMessageView);
   }
 
   /**
@@ -219,6 +230,85 @@ export class ConversationsService {
     }
     await qb.execute();
     return { readAt, conversationId, byUserId: me, upToMessageId: upToMessageId ?? null };
+  }
+
+  /**
+   * Phase 3.5: load a message that `me` is allowed to recall/edit, running the
+   * full guard chain. Shared by `recallMessage` and `editMessage` so both paths
+   * can never drift apart.
+   *
+   * Order (deliberate): membership FIRST, then existence. Both orders are
+   * indistinguishable for an actual member (missing / foreign message -> 404,
+   * someone else's message -> 403), but doing membership first means an outsider
+   * can never use this endpoint to probe whether a given message id exists.
+   */
+  private async loadOwnMessage(
+    me: string,
+    conversationId: string,
+    messageId: string,
+  ): Promise<Message> {
+    await this.assertMember(conversationId, me);
+    const message = await this.messages.findOne({ where: { id: messageId } });
+    if (!message) {
+      throw new NotFoundException('消息不存在');
+    }
+    // The id is global, so a member of A must not touch a message of B by id.
+    if (message.conversationId !== conversationId) {
+      throw new NotFoundException('消息不存在');
+    }
+    if (message.senderId !== me) {
+      throw new ForbiddenException('只能操作自己发送的消息');
+    }
+    return message;
+  }
+
+  /**
+   * Phase 3.5: recall (unsend) one of MY messages. No time window — a sender may
+   * recall forever. `recalledAt` is server-generated and the original `content`
+   * stays in the DB for audit; every public projection blanks it
+   * (`toMessageView`), so no transport can leak it.
+   * Idempotent: recalling an already-recalled message is a no-op that returns the
+   * row unchanged (the gateway still re-broadcasts, keeping late clients in sync).
+   */
+  async recallMessage(
+    me: string,
+    conversationId: string,
+    messageId: string,
+  ): Promise<Message> {
+    const message = await this.loadOwnMessage(me, conversationId, messageId);
+    if (message.recalledAt != null) {
+      return message; // already recalled -> no write, no error
+    }
+    message.recalledAt = new Date();
+    return this.messages.save(message);
+  }
+
+  /**
+   * Phase 3.5: edit one of MY messages in place. No time window and no edit
+   * history (by design) — `content` is overwritten and `editedAt` is stamped
+   * server-side. A recalled message can never be edited. Re-editing is allowed.
+   * `createdAt`, `readAt`, `senderId` and `conversationId` are left untouched:
+   * editing must not resurrect an unread state or reorder the timeline.
+   */
+  async editMessage(
+    me: string,
+    conversationId: string,
+    messageId: string,
+    content: string,
+  ): Promise<Message> {
+    const message = await this.loadOwnMessage(me, conversationId, messageId);
+    if (message.recalledAt != null) {
+      throw new BadRequestException('消息已撤回，无法编辑');
+    }
+    // Defence in depth: the DTO already trims + bounds this, but the service
+    // owns the invariant (same bounds as the send path).
+    const next = typeof content === 'string' ? content.trim() : '';
+    if (next.length < MIN_CONTENT_LENGTH || next.length > MAX_CONTENT_LENGTH) {
+      throw new BadRequestException(`消息内容长度需在 ${MIN_CONTENT_LENGTH}-${MAX_CONTENT_LENGTH} 之间`);
+    }
+    message.content = next;
+    message.editedAt = new Date();
+    return this.messages.save(message);
   }
 
   async isMember(conversationId: string, userId: string): Promise<boolean> {

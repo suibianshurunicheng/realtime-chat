@@ -38,10 +38,16 @@ import {
   TYPING_CHANGED_EVENT,
   READ_MESSAGES_EVENT,
   MESSAGES_READ_EVENT,
+  RECALL_MESSAGE_EVENT,
+  EDIT_MESSAGE_EVENT,
+  MESSAGE_RECALLED_EVENT,
+  MESSAGE_EDITED_EVENT,
 } from './realtime.types';
 import { SendSocketMessageDto } from './dto/send-socket-message.dto';
 import { TypingDto } from './dto/typing.dto';
 import { ReadMessagesDto } from './dto/read-messages.dto';
+import { RecallMessageDto } from './dto/recall-message.dto';
+import { EditMessageDto } from './dto/edit-message.dto';
 
 interface AccessPayload {
   sub: string;
@@ -375,6 +381,90 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     this.broadcastToRoom(dto.conversationId, MESSAGES_READ_EVENT, payload, {
       excludeSelf: client,
     });
+  }
+
+  /**
+   * Client -> Server: the SENDER recalls (unsends) one of their own messages.
+   * All rules (membership, ownership, idempotency) live in
+   * `ConversationsService.recallMessage`; failures are business events and go
+   * back to the caller through `message_error`.
+   *
+   * On success we broadcast `message_recalled` to the room INCLUDING the caller
+   * (same as `message_created`): both ends must adopt the server's result rather
+   * than mutate optimistically. The payload goes through `toMessageView`, which
+   * is what redacts the original text.
+   */
+  @SubscribeMessage(RECALL_MESSAGE_EVENT)
+  async onRecallMessage(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() body: unknown,
+  ): Promise<void> {
+    const user = client.data.user as SocketUser | undefined;
+    if (!user) {
+      client.emit(MESSAGE_ERROR_EVENT, { code: 401, message: '未认证' });
+      return;
+    }
+
+    const dto = plainToInstance(RecallMessageDto, body ?? {});
+    const errors = await validate(dto);
+    if (errors.length > 0) {
+      client.emit(MESSAGE_ERROR_EVENT, { code: 400, message: '消息格式非法' });
+      return;
+    }
+
+    let msg: Message;
+    try {
+      msg = await this.conversations.recallMessage(
+        user.sub,
+        dto.conversationId,
+        dto.messageId,
+      );
+    } catch (err) {
+      client.emit(MESSAGE_ERROR_EVENT, this.toErrorEnvelope(err));
+      return;
+    }
+
+    this.broadcastToRoom(dto.conversationId, MESSAGE_RECALLED_EVENT, toMessageView(msg));
+  }
+
+  /**
+   * Client -> Server: the SENDER edits one of their own messages in place.
+   * Rules (membership, ownership, "not recalled", content bounds) live in
+   * `ConversationsService.editMessage`. Success broadcasts `message_edited` to
+   * the whole room INCLUDING the caller; failures return via `message_error`.
+   */
+  @SubscribeMessage(EDIT_MESSAGE_EVENT)
+  async onEditMessage(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() body: unknown,
+  ): Promise<void> {
+    const user = client.data.user as SocketUser | undefined;
+    if (!user) {
+      client.emit(MESSAGE_ERROR_EVENT, { code: 401, message: '未认证' });
+      return;
+    }
+
+    const dto = plainToInstance(EditMessageDto, body ?? {});
+    const errors = await validate(dto);
+    if (errors.length > 0) {
+      client.emit(MESSAGE_ERROR_EVENT, { code: 400, message: '消息格式非法' });
+      return;
+    }
+
+    let msg: Message;
+    try {
+      msg = await this.conversations.editMessage(
+        user.sub,
+        dto.conversationId,
+        dto.messageId,
+        dto.content,
+      );
+    } catch (err) {
+      client.emit(MESSAGE_ERROR_EVENT, this.toErrorEnvelope(err));
+      return;
+    }
+
+    this.broadcastToRoom(dto.conversationId, MESSAGE_EDITED_EVENT, toMessageView(msg));
   }
 
   /**
