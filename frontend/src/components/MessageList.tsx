@@ -1,5 +1,72 @@
 import { useEffect, useState } from 'react';
-import type { Message } from '../types/chat';
+import type { Message, AttachmentView } from '../types/chat';
+import { fetchAttachmentBlob } from '../api/attachments.api';
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/** Renders one attachment: image -> lazy blob thumbnail; file -> download card. */
+function AttachmentItem({
+  att,
+  onDownload,
+}: {
+  att: AttachmentView;
+  onDownload: (a: AttachmentView) => void;
+}) {
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [err, setErr] = useState(false);
+
+  useEffect(() => {
+    let url: string | null = null;
+    let active = true;
+    fetchAttachmentBlob(att.id)
+      .then((b) => {
+        url = URL.createObjectURL(b);
+        if (active) setBlobUrl(url);
+      })
+      .catch(() => active && setErr(true));
+    return () => {
+      active = false;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [att.id]);
+
+  if (att.kind === 'image') {
+    return (
+      <button
+        type="button"
+        className="msg-image"
+        data-error={err ? 'true' : 'false'}
+        onClick={() => blobUrl && window.dispatchEvent(new CustomEvent('open-image-modal', { detail: blobUrl }))}
+        title={att.fileName}
+      >
+        {err ? (
+          <span className="img-error">图片加载失败</span>
+        ) : blobUrl ? (
+          <img src={blobUrl} alt={att.fileName} loading="lazy" />
+        ) : (
+          <span className="img-loading">加载中…</span>
+        )}
+      </button>
+    );
+  }
+
+  // file
+  return (
+    <button type="button" className="msg-file-card" onClick={() => onDownload(att)} title={att.fileName}>
+      <span className="file-icon" aria-hidden>
+        📄
+      </span>
+      <span className="file-meta">
+        <span className="file-name">{att.fileName}</span>
+        <span className="file-size">{formatSize(att.fileSize)}</span>
+      </span>
+    </button>
+  );
+}
 
 function formatTime(iso: string): string {
   const d = new Date(iso);
@@ -18,47 +85,59 @@ const MAX_CONTENT_LENGTH = 2000;
  * Phase 3.5 rendering rules (all three states are mutually exclusive):
  *  - recalled (`recalledAt` set) -> render ONLY the "消息已撤回" placeholder. The
  *    original text is never rendered (the server already blanks `content`, this
- *    is the second line of defence) and no action bar is offered.
+ *    is the second line of defence) and no action bar is offered. Media attached
+ *    to a recalled message is hidden entirely by this early return.
  *  - edited   (`editedAt` set)   -> render the latest `content` + an "已编辑" tag.
  *  - plain                       -> render `content`.
  *
- * The action bar (编辑 / 撤回) is shown for MY messages only. It appears on hover
- * on desktop and is permanently visible on touch devices (see `.msg-actions` in
- * index.css) — no long-press handling needed.
+ * Phase 4: a message may carry `attachments` (image thumbnails / file cards).
+ * Images are loaded through the auth-gated blob fetch (never a raw <img src>,
+ * which would skip the JWT header). Clicking an image opens a modal preview.
  *
- * Nothing here mutates state optimistically: `onRecall` / `onEdit` just emit, and
- * the row only changes once the server broadcast lands. While a request is in
- * flight the row's buttons are disabled (`busyId`) so a double click cannot send
- * two recalls / edits.
+ * The action bar (编辑 / 撤回) is shown for MY messages only. Nothing here
+ * mutates state optimistically: `onRecall` / `onEdit` just emit, and the row
+ * only changes once the server broadcast lands. While a request is in flight the
+ * row's buttons are disabled (`busyId`) so a double click cannot send two.
  */
 export function MessageList({
   messages,
   currentUserId,
   onRecall,
   onEdit,
+  onDownloadAttachment,
 }: {
   messages: Message[];
   currentUserId: string;
   onRecall?: (messageId: string) => void;
   onEdit?: (messageId: string, content: string) => void;
+  onDownloadAttachment?: (att: AttachmentView) => void;
 }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [modalUrl, setModalUrl] = useState<string | null>(null);
 
-  // The server result (any patch to this conversation replaces the array) is what
-  // releases the row.
   useEffect(() => {
     setBusyId(null);
   }, [messages]);
 
-  // Safety net: an error (message_error) never touches `messages`, so release the
-  // row after a short delay instead of leaving it disabled forever.
   useEffect(() => {
     if (!busyId) return;
     const t = window.setTimeout(() => setBusyId(null), 5000);
     return () => window.clearTimeout(t);
   }, [busyId]);
+
+  // Image modal: opened by AttachmentItem, closed on backdrop click / Esc.
+  useEffect(() => {
+    const open = (e: Event) => setModalUrl((e as CustomEvent<string>).detail);
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setModalUrl(null);
+    window.addEventListener('open-image-modal', open as EventListener);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('open-image-modal', open as EventListener);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, []);
 
   const startEdit = (m: Message) => {
     setEditingId(m.id);
@@ -95,6 +174,7 @@ export function MessageList({
         const editing = editingId === m.id;
         const busy = busyId === m.id;
         const canAct = mine && !recalled && (!!onRecall || !!onEdit);
+        const attachments = m.attachments ?? [];
 
         return (
           <div key={m.id} className="msg-row" data-mine={mine ? 'true' : 'false'}>
@@ -127,7 +207,20 @@ export function MessageList({
                   </div>
                 </div>
               ) : (
-                <div className="msg-content">{m.content}</div>
+                <>
+                  {attachments.length > 0 && (
+                    <div className="msg-attachments">
+                      {attachments.map((a) => (
+                        <AttachmentItem
+                          key={a.id}
+                          att={a}
+                          onDownload={(att) => onDownloadAttachment?.(att)}
+                        />
+                      ))}
+                    </div>
+                  )}
+                  {m.content && <div className="msg-content">{m.content}</div>}
+                </>
               )}
 
               <div className="msg-meta">
@@ -154,6 +247,12 @@ export function MessageList({
           </div>
         );
       })}
+
+      {modalUrl && (
+        <div className="img-modal" onClick={() => setModalUrl(null)}>
+          <img src={modalUrl} alt="preview" />
+        </div>
+      )}
     </div>
   );
 }

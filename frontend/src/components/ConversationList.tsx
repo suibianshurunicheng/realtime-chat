@@ -55,8 +55,20 @@ export function ConversationList({ onSelect }: { onSelect: (id: string) => void 
               {/* Phase 3.5: the preview reads from the same `lastMessageByConv`
                   entry the store patches on recall/edit, so the list can never
                   keep showing text that was recalled in the open thread. */}
-              <div className="conv-preview" data-recalled={last?.recalledAt ? 'true' : 'false'}>
-                {!last ? '暂无消息' : last.recalledAt ? '消息已撤回' : last.content}
+              <div
+                className="conv-preview"
+                data-recalled={last?.recalledAt ? 'true' : 'false'}
+                data-attachment={last?.attachments && last.attachments.length > 0 ? 'true' : 'false'}
+              >
+                {!last
+                  ? '暂无消息'
+                  : last.recalledAt
+                    ? '消息已撤回'
+                    : last.attachments && last.attachments.length > 0
+                      ? last.attachments.some((a) => a.kind === 'image')
+                        ? '[图片]'
+                        : '[文件]'
+                      : last.content}
               </div>
             </div>
             {count > 0 && <span className="unread-badge">{count > 99 ? '99+' : count}</span>}

@@ -3,13 +3,16 @@ import {
   PrimaryGeneratedColumn,
   Column,
   CreateDateColumn,
+  OneToMany,
 } from 'typeorm';
+import type { Attachment } from '../../attachments/entities/attachment.entity';
 
-export type MessageType = 'text';
+export type MessageType = 'text' | 'image' | 'file';
 
 /**
- * A chat message. Phase 2.2A supports `text` only (image/file/audio/video/system
- * are explicitly out of scope and reserved for later phases).
+ * A chat message. Phase 2.2A supported `text` only; Phase 4 adds `image` / `file`
+ * (carrying attachments — see Attachment entity). `audio`/`video`/`system` remain
+ * out of scope.
  *
  * FK conversationId -> conversations, FK senderId -> users. The (conversationId,
  * created_at) index supports cursor-based history pagination.
@@ -63,4 +66,11 @@ export class Message {
   /** Last edit timestamp (set by ConversationsService.editMessage). Null = never edited. */
   @Column({ type: 'datetime', name: 'edited_at', nullable: true })
   editedAt: Date | null;
+
+  /** Phase 4: 1:N attachments (image/file messages). Lazy relation, NOT eager —
+   *  only populated when the query joins it (sendMessage reload, getMessages). */
+  @OneToMany('Attachment', (attachment: Attachment) => attachment.message, {
+    nullable: true,
+  })
+  attachments?: Attachment[];
 }

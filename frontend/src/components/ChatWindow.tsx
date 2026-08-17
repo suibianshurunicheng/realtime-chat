@@ -4,6 +4,7 @@ import { usePresenceStore } from '../store/presence.store';
 import { useAuthStore } from '../store/auth.store';
 import { useTypingStore } from '../store/typing.store';
 import { getMessages } from '../api/conversations.api';
+import { fetchAttachmentBlob, downloadBlob } from '../api/attachments.api';
 import {
   sendSocketMessage,
   emitRead,
@@ -13,7 +14,7 @@ import {
 import { MessageList } from './MessageList';
 import { MessageInput } from './MessageInput';
 import { PresenceDot } from './PresenceDot';
-import type { ConversationView } from '../types/chat';
+import type { ConversationView, AttachmentView } from '../types/chat';
 
 export function ChatWindow({ conversation }: { conversation: ConversationView | null }) {
   const currentUserId = useAuthStore((s) => s.user?.id ?? '');
@@ -100,10 +101,10 @@ export function ChatWindow({ conversation }: { conversation: ConversationView | 
     }
   };
 
-  const onSend = (content: string) => {
+  const onSend = (content: string, attachmentIds?: string[]) => {
     if (!conversation) return;
     setError(null);
-    sendSocketMessage(conversation.id, content);
+    sendSocketMessage(conversation.id, content, attachmentIds);
   };
 
   // Phase 3.5: recall / edit are emit-only. The store is updated exclusively by
@@ -119,6 +120,17 @@ export function ChatWindow({ conversation }: { conversation: ConversationView | 
     if (!conversation) return;
     setError(null);
     emitEditMessage(conversation.id, messageId, content);
+  };
+
+  // Phase 4: download an attachment via the auth-gated blob fetch (never a raw
+  // <img src>, which would skip the JWT header).
+  const onDownloadAttachment = async (att: AttachmentView) => {
+    try {
+      const blob = await fetchAttachmentBlob(att.id);
+      downloadBlob(blob, att.fileName);
+    } catch {
+      setError('下载失败');
+    }
   };
 
   // Phase 3.4: mark the OTHER party's unread messages as read whenever we are
@@ -164,6 +176,7 @@ export function ChatWindow({ conversation }: { conversation: ConversationView | 
               currentUserId={currentUserId}
               onRecall={onRecall}
               onEdit={onEditMessage}
+              onDownloadAttachment={onDownloadAttachment}
             />
           </>
         )}

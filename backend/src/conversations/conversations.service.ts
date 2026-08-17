@@ -1,18 +1,28 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { QueryFailedError, Repository } from 'typeorm';
+import { IsNull, QueryFailedError, Repository } from 'typeorm';
 import { User } from '../users/entities/user.entity';
 import { Friendship } from '../friends/entities/friendship.entity';
 import { Conversation, ConversationType } from './entities/conversation.entity';
 import { ConversationMember } from './entities/conversation-member.entity';
-import { Message } from './entities/message.entity';
+import { Message, MessageType } from './entities/message.entity';
 import { MessageView, toMessageView } from './message.view';
+import { Attachment, AttachmentKind } from '../attachments/entities/attachment.entity';
 import type { PublicUser } from '../users/users.service';
+
+/** Phase 4 send payload. Text messages carry `content`; media carry `attachmentIds`
+ *  (and an optional `content` caption). */
+export interface SendMessageInput {
+  type?: MessageType;
+  content?: string;
+  attachmentIds?: string[];
+}
 
 export interface ConversationView {
   id: string;
@@ -41,6 +51,8 @@ export class ConversationsService {
     private readonly users: Repository<User>,
     @InjectRepository(Friendship)
     private readonly friendships: Repository<Friendship>,
+    @InjectRepository(Attachment)
+    private readonly attachments: Repository<Attachment>,
   ) {}
 
   private toPublic(u: User): PublicUser {
@@ -169,35 +181,126 @@ export class ConversationsService {
     const take = Math.min(Math.max(parseInt(limit ?? '', 10) || DEFAULT_PAGE_LIMIT, 1), MAX_PAGE_LIMIT);
     const qb = this.messages
       .createQueryBuilder('m')
-      .where('m.conversationId = :cid', { cid: conversationId });
+      .leftJoinAndSelect('m.attachments', 'att')
+      .where('m.conversationId = :cid', { cid: conversationId })
+      .orderBy('m.id', 'DESC')
+      .addOrderBy('att.id', 'ASC');
     if (before) {
       qb.andWhere('m.id < :before', { before });
     }
-    const rows = await qb
-      .orderBy('m.id', 'DESC')
-      .limit(take)
-      .getMany();
+    const rows = await qb.limit(take).getMany();
     rows.reverse(); // ascending (chronological) for stable rendering
     return rows.map(toMessageView);
   }
 
+  /** Load a message by id (no membership/ownership checks). Null if missing. */
+  async getMessageById(id: string): Promise<Message | null> {
+    return this.messages.findOne({ where: { id } });
+  }
+
   /**
-   * Send a text message. `senderId` is ALWAYS `me` (from the JWT) — the client
-   * body is never trusted for it. 404 if conversation missing, 403 if not a member.
+   * Send a message. `senderId` is ALWAYS `me` (from the JWT). Supports:
+   *  - text:  `content` required, no attachments.
+   *  - image/file: at least one attachment, optional `content` caption.
+   *
+   * Attachments are bound atomically (conditional UPDATE WHERE messageId IS
+   * NULL) so a given attachment can be consumed by exactly one message even
+   * under concurrency. The message type is normalized from the bound
+   * attachments' kinds (a mix containing a file -> 'file').
+   *
+   * 404 conversation missing, 403 non-member, 400 shape violations, 404 unknown
+   * attachment, 403 not-your-attachment, 409 already-bound / conversation-mismatch.
    */
-  async sendMessage(me: string, conversationId: string, content: string): Promise<Message> {
+  async sendMessage(
+    me: string,
+    conversationId: string,
+    input: SendMessageInput,
+  ): Promise<Message> {
     const conv = await this.conversations.findOne({ where: { id: conversationId } });
     if (!conv) {
       throw new NotFoundException('会话不存在');
     }
     await this.assertMember(conversationId, me);
-    const msg = this.messages.create({
-      conversationId,
-      senderId: me,
-      type: 'text',
-      content,
+
+    const type = input.type ?? 'text';
+    const caption = typeof input.content === 'string' ? input.content.trim() : '';
+    const attachmentIds = [...new Set(input.attachmentIds ?? [])]; // dedupe
+
+    if (type === 'text') {
+      if (attachmentIds.length > 0) {
+        throw new BadRequestException('文本消息不能携带附件');
+      }
+      if (caption.length < MIN_CONTENT_LENGTH || caption.length > MAX_CONTENT_LENGTH) {
+        throw new BadRequestException(`消息内容长度需在 ${MIN_CONTENT_LENGTH}-${MAX_CONTENT_LENGTH} 之间`);
+      }
+    } else {
+      // image | file
+      if (attachmentIds.length === 0) {
+        throw new BadRequestException('媒体消息至少需要一个附件');
+      }
+      if (caption.length > MAX_CONTENT_LENGTH) {
+        throw new BadRequestException(`消息内容长度需在 ${MIN_CONTENT_LENGTH}-${MAX_CONTENT_LENGTH} 之间`);
+      }
+    }
+
+    // Pre-validate every attachment (existence / ownership / conversation /
+    // still-unbound) BEFORE creating the message, so a rejection never leaves a
+    // dangling empty message row behind.
+    if (attachmentIds.length > 0) {
+      for (const aid of attachmentIds) {
+        const att = await this.attachments.findOne({ where: { id: aid } });
+        if (!att) throw new NotFoundException('附件不存在');
+        if (att.messageId != null) throw new ConflictException('附件已被其他消息占用');
+        if (att.senderId !== me) throw new ForbiddenException('不能引用他人的附件');
+        if (att.conversationId !== conversationId)
+          throw new BadRequestException('附件不属于该会话');
+      }
+    }
+
+    // Single transaction: create the message and atomically bind every attachment.
+    // The conditional UPDATE WHERE messageId IS NULL lets exactly ONE concurrent
+    // caller win the bind; a loser's update matches 0 rows -> 409, and its whole
+    // transaction (including the empty message) rolls back — no orphan rows.
+    return await this.messages.manager.transaction(async (mgr) => {
+      const msg = mgr.create(Message, {
+        conversationId,
+        senderId: me,
+        type,
+        content: caption,
+      });
+      const saved = await mgr.save(msg);
+
+      let finalType: MessageType = type;
+      if (attachmentIds.length > 0) {
+        const kinds: AttachmentKind[] = [];
+        for (const aid of attachmentIds) {
+          // Conditional update: succeeds ONLY while the attachment is still
+          // unbound AND belongs to `me` in `conversationId`. `senderId` /
+          // `conversationId` are immutable post-creation, so this WHERE carries
+          // the full three-way guard (the pre-loop already validated them, this
+          // is the in-transaction lock that makes concurrency safe).
+          const upd = await mgr.getRepository(Attachment).update(
+            { id: aid, messageId: IsNull(), senderId: me, conversationId },
+            { messageId: saved.id, expiresAt: null },
+          );
+          if (upd.affected === 0) {
+            throw new ConflictException('附件已被其他消息占用');
+          }
+          const att = await mgr.getRepository(Attachment).findOne({ where: { id: aid } });
+          kinds.push(att!.kind);
+        }
+        finalType = kinds.some((k) => k === 'file') ? 'file' : 'image';
+        if (finalType !== type) {
+          await mgr.update(Message, saved.id, { type: finalType });
+        }
+      }
+
+      // Reload with attachments so the view (REST + socket) is complete.
+      return (await mgr.getRepository(Message).findOne({
+        where: { id: saved.id },
+        relations: ['attachments'],
+      }))!;
     });
-    return this.messages.save(msg);
   }
 
   /**
@@ -318,7 +421,9 @@ export class ConversationsService {
     return !!m;
   }
 
-  private async assertMember(conversationId: string, userId: string): Promise<void> {
+  /** Throw ForbiddenException unless `userId` is a member of `conversationId`.
+   *  Public so the attachments module can reuse the single membership guard. */
+  async assertMember(conversationId: string, userId: string): Promise<void> {
     if (!(await this.isMember(conversationId, userId))) {
       throw new ForbiddenException('你不是该会话的成员');
     }

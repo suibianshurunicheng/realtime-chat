@@ -1,4 +1,6 @@
 import { Message, MessageType } from './entities/message.entity';
+import type { Attachment } from '../attachments/entities/attachment.entity';
+import { toAttachmentView, AttachmentView } from '../attachments/attachment.view';
 
 /**
  * Placeholder that replaces the body of a recalled message in EVERY public
@@ -35,10 +37,13 @@ export interface MessageView {
   readAt: Date | null;
   recalledAt: Date | null;
   editedAt: Date | null;
+  /** Phase 4: attached media (empty for text messages). */
+  attachments: AttachmentView[];
 }
 
 export function toMessageView(message: Message): MessageView {
   const recalled = message.recalledAt != null;
+  const attachments = ((message as { attachments?: Attachment[] }).attachments ?? []) as Attachment[];
   return {
     id: message.id,
     conversationId: message.conversationId,
@@ -50,5 +55,6 @@ export function toMessageView(message: Message): MessageView {
     readAt: message.readAt,
     recalledAt: message.recalledAt,
     editedAt: message.editedAt,
+    attachments: attachments.map(toAttachmentView),
   };
 }

@@ -325,14 +325,16 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
 
     let msg: Message;
     try {
-      // Single shared path with REST: membership + sender + persistence enforced here.
-      msg = await this.conversations.sendMessage(user.sub, dto.conversationId, dto.content);
+      // Single shared path with REST: membership + sender + persistence + attachment
+      // binding all enforced here. `dto` carries conversationId/type/content/attachmentIds.
+      msg = await this.conversations.sendMessage(user.sub, dto.conversationId, dto);
     } catch (err) {
       client.emit(MESSAGE_ERROR_EVENT, this.toErrorEnvelope(err));
       return;
     }
 
     // Single serialization point — sender included, so A and B receive the identical event.
+    // `toMessageView` now also projects the bound attachments (if any).
     this.broadcastToRoom(dto.conversationId, MESSAGE_CREATED_EVENT, toMessageView(msg));
   }
 

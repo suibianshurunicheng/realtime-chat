@@ -117,10 +117,17 @@ export function getSocket(): Socket | null {
   return socket;
 }
 
-/** Emit send_message. The server echoes message_created to the room (incl. sender). */
-export function sendSocketMessage(conversationId: string, content: string): void {
+/** Emit send_message. The server echoes message_created to the room (incl. sender).
+ *  For media, pass the staged `attachmentIds`; `type` is optional (the server
+ *  normalizes it from the attachments, but we send it for clarity). */
+export function sendSocketMessage(
+  conversationId: string,
+  content: string,
+  attachmentIds?: string[],
+  type?: 'text' | 'image' | 'file',
+): void {
   if (!socket) return;
-  socket.emit('send_message', { conversationId, content });
+  socket.emit('send_message', { conversationId, content, attachmentIds, type });
 }
 
 /** Tell the server the local user started typing in `conversationId`. */
