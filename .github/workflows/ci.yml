@@ -1,0 +1,127 @@
+name: CI
+
+# PR-A (Phase 5): add GitHub Actions CI as a merge gate for develop/main.
+# Scope: CI pipeline only. No business code, config, DB, or API changes.
+
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop, main]
+
+# Cancel stale runs for the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: backend (lint, build, e2e)
+    runs-on: ubuntu-latest
+    # Non-sensitive CI test defaults. All values are throwaway for the test DB.
+    env:
+      NODE_ENV: test
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3306
+      DB_USERNAME: root
+      DB_PASSWORD: root
+      DB_DATABASE: realtime_chat_test
+      REDIS_HOST: 127.0.0.1
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ""
+      REDIS_DB: 1
+      JWT_ACCESS_SECRET: ci-dummy-access-secret
+      JWT_REFRESH_SECRET: ci-dummy-refresh-secret
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MySQL 8
+        # Auto-creates the `realtime_chat_test` database and waits until ready.
+        uses: shogo82148/actions-setup-mysql@v1
+        with:
+          mysql-version: '8.0'
+          root-password: root
+          database: realtime_chat_test
+
+      - name: Setup Redis 6
+        uses: supercharge/redis-github-action@1.8.0
+        with:
+          redis-version: 6
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Lint
+        working-directory: backend
+        run: npm run lint
+
+      - name: Build
+        working-directory: backend
+        run: npm run build
+
+      - name: E2E
+        working-directory: backend
+        run: npm run test:e2e
+
+      - name: Upload backend e2e logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-e2e-logs
+          path: backend/test/
+          if-no-files-found: ignore
+
+  frontend:
+    name: frontend (lint, build, test)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Lint
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+
+      - name: Test
+        working-directory: frontend
+        run: npm run test
+
+      - name: Upload frontend logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-logs
+          path: frontend/
+          if-no-files-found: ignore
+
+  ci-gate:
+    name: ci-gate
+    needs: [backend, frontend]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Gate
+        run: echo "All CI jobs passed"
