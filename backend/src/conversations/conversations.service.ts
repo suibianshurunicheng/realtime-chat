@@ -1,17 +1,28 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { QueryFailedError, Repository } from 'typeorm';
+import { IsNull, QueryFailedError, Repository } from 'typeorm';
 import { User } from '../users/entities/user.entity';
 import { Friendship } from '../friends/entities/friendship.entity';
 import { Conversation, ConversationType } from './entities/conversation.entity';
 import { ConversationMember } from './entities/conversation-member.entity';
-import { Message } from './entities/message.entity';
+import { Message, MessageType } from './entities/message.entity';
+import { MessageView, toMessageView } from './message.view';
+import { Attachment, AttachmentKind } from '../attachments/entities/attachment.entity';
 import type { PublicUser } from '../users/users.service';
+
+/** Phase 4 send payload. Text messages carry `content`; media carry `attachmentIds`
+ *  (and an optional `content` caption). */
+export interface SendMessageInput {
+  type?: MessageType;
+  content?: string;
+  attachmentIds?: string[];
+}
 
 export interface ConversationView {
   id: string;
@@ -23,6 +34,9 @@ export interface ConversationView {
 
 const MAX_PAGE_LIMIT = 50;
 const DEFAULT_PAGE_LIMIT = 30;
+/** Same bounds the send path enforces (SendMessageDto / SendSocketMessageDto). */
+const MIN_CONTENT_LENGTH = 1;
+const MAX_CONTENT_LENGTH = 2000;
 
 @Injectable()
 export class ConversationsService {
@@ -37,6 +51,8 @@ export class ConversationsService {
     private readonly users: Repository<User>,
     @InjectRepository(Friendship)
     private readonly friendships: Repository<Friendship>,
+    @InjectRepository(Attachment)
+    private readonly attachments: Repository<Attachment>,
   ) {}
 
   private toPublic(u: User): PublicUser {
@@ -147,46 +163,144 @@ export class ConversationsService {
     return this.buildView(conv);
   }
 
-  /** Cursor-paginated history (oldest first within the page). `before` is a message id. */
+  /**
+   * Cursor-paginated history (oldest first within the page). `before` is a message id.
+   *
+   * Phase 3.5: projects through `toMessageView` instead of returning raw entities,
+   * so REST history obeys the exact same wire shape as the Socket broadcasts —
+   * and, critically, so a RECALLED message's original text is redacted here too
+   * (a client reloading history must not be able to read it back).
+   */
   async getMessages(
     me: string,
     conversationId: string,
     limit?: string,
     before?: string,
-  ): Promise<Message[]> {
+  ): Promise<MessageView[]> {
     await this.assertMember(conversationId, me);
     const take = Math.min(Math.max(parseInt(limit ?? '', 10) || DEFAULT_PAGE_LIMIT, 1), MAX_PAGE_LIMIT);
     const qb = this.messages
       .createQueryBuilder('m')
-      .where('m.conversationId = :cid', { cid: conversationId });
+      .leftJoinAndSelect('m.attachments', 'att')
+      .where('m.conversationId = :cid', { cid: conversationId })
+      .orderBy('m.id', 'DESC')
+      .addOrderBy('att.id', 'ASC');
     if (before) {
       qb.andWhere('m.id < :before', { before });
     }
-    const rows = await qb
-      .orderBy('m.id', 'DESC')
-      .limit(take)
-      .getMany();
+    const rows = await qb.limit(take).getMany();
     rows.reverse(); // ascending (chronological) for stable rendering
-    return rows;
+    return rows.map(toMessageView);
+  }
+
+  /** Load a message by id (no membership/ownership checks). Null if missing. */
+  async getMessageById(id: string): Promise<Message | null> {
+    return this.messages.findOne({ where: { id } });
   }
 
   /**
-   * Send a text message. `senderId` is ALWAYS `me` (from the JWT) — the client
-   * body is never trusted for it. 404 if conversation missing, 403 if not a member.
+   * Send a message. `senderId` is ALWAYS `me` (from the JWT). Supports:
+   *  - text:  `content` required, no attachments.
+   *  - image/file: at least one attachment, optional `content` caption.
+   *
+   * Attachments are bound atomically (conditional UPDATE WHERE messageId IS
+   * NULL) so a given attachment can be consumed by exactly one message even
+   * under concurrency. The message type is normalized from the bound
+   * attachments' kinds (a mix containing a file -> 'file').
+   *
+   * 404 conversation missing, 403 non-member, 400 shape violations, 404 unknown
+   * attachment, 403 not-your-attachment, 409 already-bound / conversation-mismatch.
    */
-  async sendMessage(me: string, conversationId: string, content: string): Promise<Message> {
+  async sendMessage(
+    me: string,
+    conversationId: string,
+    input: SendMessageInput,
+  ): Promise<Message> {
     const conv = await this.conversations.findOne({ where: { id: conversationId } });
     if (!conv) {
       throw new NotFoundException('会话不存在');
     }
     await this.assertMember(conversationId, me);
-    const msg = this.messages.create({
-      conversationId,
-      senderId: me,
-      type: 'text',
-      content,
+
+    const type = input.type ?? 'text';
+    const caption = typeof input.content === 'string' ? input.content.trim() : '';
+    const attachmentIds = [...new Set(input.attachmentIds ?? [])]; // dedupe
+
+    if (type === 'text') {
+      if (attachmentIds.length > 0) {
+        throw new BadRequestException('文本消息不能携带附件');
+      }
+      if (caption.length < MIN_CONTENT_LENGTH || caption.length > MAX_CONTENT_LENGTH) {
+        throw new BadRequestException(`消息内容长度需在 ${MIN_CONTENT_LENGTH}-${MAX_CONTENT_LENGTH} 之间`);
+      }
+    } else {
+      // image | file
+      if (attachmentIds.length === 0) {
+        throw new BadRequestException('媒体消息至少需要一个附件');
+      }
+      if (caption.length > MAX_CONTENT_LENGTH) {
+        throw new BadRequestException(`消息内容长度需在 ${MIN_CONTENT_LENGTH}-${MAX_CONTENT_LENGTH} 之间`);
+      }
+    }
+
+    // Pre-validate every attachment (existence / ownership / conversation /
+    // still-unbound) BEFORE creating the message, so a rejection never leaves a
+    // dangling empty message row behind.
+    if (attachmentIds.length > 0) {
+      for (const aid of attachmentIds) {
+        const att = await this.attachments.findOne({ where: { id: aid } });
+        if (!att) throw new NotFoundException('附件不存在');
+        if (att.messageId != null) throw new ConflictException('附件已被其他消息占用');
+        if (att.senderId !== me) throw new ForbiddenException('不能引用他人的附件');
+        if (att.conversationId !== conversationId)
+          throw new BadRequestException('附件不属于该会话');
+      }
+    }
+
+    // Single transaction: create the message and atomically bind every attachment.
+    // The conditional UPDATE WHERE messageId IS NULL lets exactly ONE concurrent
+    // caller win the bind; a loser's update matches 0 rows -> 409, and its whole
+    // transaction (including the empty message) rolls back — no orphan rows.
+    return await this.messages.manager.transaction(async (mgr) => {
+      const msg = mgr.create(Message, {
+        conversationId,
+        senderId: me,
+        type,
+        content: caption,
+      });
+      const saved = await mgr.save(msg);
+
+      let finalType: MessageType = type;
+      if (attachmentIds.length > 0) {
+        const kinds: AttachmentKind[] = [];
+        for (const aid of attachmentIds) {
+          // Conditional update: succeeds ONLY while the attachment is still
+          // unbound AND belongs to `me` in `conversationId`. `senderId` /
+          // `conversationId` are immutable post-creation, so this WHERE carries
+          // the full three-way guard (the pre-loop already validated them, this
+          // is the in-transaction lock that makes concurrency safe).
+          const upd = await mgr.getRepository(Attachment).update(
+            { id: aid, messageId: IsNull(), senderId: me, conversationId },
+            { messageId: saved.id, expiresAt: null },
+          );
+          if (upd.affected === 0) {
+            throw new ConflictException('附件已被其他消息占用');
+          }
+          const att = await mgr.getRepository(Attachment).findOne({ where: { id: aid } });
+          kinds.push(att!.kind);
+        }
+        finalType = kinds.some((k) => k === 'file') ? 'file' : 'image';
+        if (finalType !== type) {
+          await mgr.update(Message, saved.id, { type: finalType });
+        }
+      }
+
+      // Reload with attachments so the view (REST + socket) is complete.
+      return (await mgr.getRepository(Message).findOne({
+        where: { id: saved.id },
+        relations: ['attachments'],
+      }))!;
     });
-    return this.messages.save(msg);
   }
 
   /**
@@ -221,6 +335,85 @@ export class ConversationsService {
     return { readAt, conversationId, byUserId: me, upToMessageId: upToMessageId ?? null };
   }
 
+  /**
+   * Phase 3.5: load a message that `me` is allowed to recall/edit, running the
+   * full guard chain. Shared by `recallMessage` and `editMessage` so both paths
+   * can never drift apart.
+   *
+   * Order (deliberate): membership FIRST, then existence. Both orders are
+   * indistinguishable for an actual member (missing / foreign message -> 404,
+   * someone else's message -> 403), but doing membership first means an outsider
+   * can never use this endpoint to probe whether a given message id exists.
+   */
+  private async loadOwnMessage(
+    me: string,
+    conversationId: string,
+    messageId: string,
+  ): Promise<Message> {
+    await this.assertMember(conversationId, me);
+    const message = await this.messages.findOne({ where: { id: messageId } });
+    if (!message) {
+      throw new NotFoundException('消息不存在');
+    }
+    // The id is global, so a member of A must not touch a message of B by id.
+    if (message.conversationId !== conversationId) {
+      throw new NotFoundException('消息不存在');
+    }
+    if (message.senderId !== me) {
+      throw new ForbiddenException('只能操作自己发送的消息');
+    }
+    return message;
+  }
+
+  /**
+   * Phase 3.5: recall (unsend) one of MY messages. No time window — a sender may
+   * recall forever. `recalledAt` is server-generated and the original `content`
+   * stays in the DB for audit; every public projection blanks it
+   * (`toMessageView`), so no transport can leak it.
+   * Idempotent: recalling an already-recalled message is a no-op that returns the
+   * row unchanged (the gateway still re-broadcasts, keeping late clients in sync).
+   */
+  async recallMessage(
+    me: string,
+    conversationId: string,
+    messageId: string,
+  ): Promise<Message> {
+    const message = await this.loadOwnMessage(me, conversationId, messageId);
+    if (message.recalledAt != null) {
+      return message; // already recalled -> no write, no error
+    }
+    message.recalledAt = new Date();
+    return this.messages.save(message);
+  }
+
+  /**
+   * Phase 3.5: edit one of MY messages in place. No time window and no edit
+   * history (by design) — `content` is overwritten and `editedAt` is stamped
+   * server-side. A recalled message can never be edited. Re-editing is allowed.
+   * `createdAt`, `readAt`, `senderId` and `conversationId` are left untouched:
+   * editing must not resurrect an unread state or reorder the timeline.
+   */
+  async editMessage(
+    me: string,
+    conversationId: string,
+    messageId: string,
+    content: string,
+  ): Promise<Message> {
+    const message = await this.loadOwnMessage(me, conversationId, messageId);
+    if (message.recalledAt != null) {
+      throw new BadRequestException('消息已撤回，无法编辑');
+    }
+    // Defence in depth: the DTO already trims + bounds this, but the service
+    // owns the invariant (same bounds as the send path).
+    const next = typeof content === 'string' ? content.trim() : '';
+    if (next.length < MIN_CONTENT_LENGTH || next.length > MAX_CONTENT_LENGTH) {
+      throw new BadRequestException(`消息内容长度需在 ${MIN_CONTENT_LENGTH}-${MAX_CONTENT_LENGTH} 之间`);
+    }
+    message.content = next;
+    message.editedAt = new Date();
+    return this.messages.save(message);
+  }
+
   async isMember(conversationId: string, userId: string): Promise<boolean> {
     const m = await this.members.findOne({
       where: { conversationId, userId },
@@ -228,7 +421,9 @@ export class ConversationsService {
     return !!m;
   }
 
-  private async assertMember(conversationId: string, userId: string): Promise<void> {
+  /** Throw ForbiddenException unless `userId` is a member of `conversationId`.
+   *  Public so the attachments module can reuse the single membership guard. */
+  async assertMember(conversationId: string, userId: string): Promise<void> {
     if (!(await this.isMember(conversationId, userId))) {
       throw new ForbiddenException('你不是该会话的成员');
     }

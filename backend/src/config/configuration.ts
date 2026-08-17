@@ -1,4 +1,5 @@
 import * as process from 'process';
+import path from 'path';
 
 export interface AppConfig {
   server: {
@@ -30,6 +31,16 @@ export interface AppConfig {
   realtime: {
     /** Allowed Socket.IO CORS origins. Never `*`. Defaults to the dev Vite origin. */
     corsOrigins: string[];
+  };
+  storage: {
+    /** 'local' only in Phase 4 (MinIO/S3 reserved for later). */
+    driver: 'local' | 'minio' | 's3';
+    /** Directory for LocalStorageService. Never a public static route. */
+    localDir: string;
+    /** Max bytes per uploaded file. Phase 4 default 20 MB, overridable via env. */
+    maxFileSize: number;
+    /** Seconds an unbound (uploaded-but-not-sent) attachment survives before sweep. */
+    orphanTtlSec: number;
   };
 }
 
@@ -69,5 +80,11 @@ export default (): AppConfig => ({
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean),
+  },
+  storage: {
+    driver: (process.env.STORAGE_DRIVER ?? 'local') as 'local' | 'minio' | 's3',
+    localDir: process.env.STORAGE_LOCAL_DIR ?? path.join(process.cwd(), '.uploads'),
+    maxFileSize: parseInt(process.env.STORAGE_MAX_FILE_SIZE ?? String(20 * 1024 * 1024), 10),
+    orphanTtlSec: parseInt(process.env.STORAGE_ORPHAN_TTL_SEC ?? '86400', 10),
   },
 });

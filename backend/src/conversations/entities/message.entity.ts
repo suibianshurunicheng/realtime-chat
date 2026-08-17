@@ -3,13 +3,16 @@ import {
   PrimaryGeneratedColumn,
   Column,
   CreateDateColumn,
+  OneToMany,
 } from 'typeorm';
+import type { Attachment } from '../../attachments/entities/attachment.entity';
 
-export type MessageType = 'text';
+export type MessageType = 'text' | 'image' | 'file';
 
 /**
- * A chat message. Phase 2.2A supports `text` only (image/file/audio/video/system
- * are explicitly out of scope and reserved for later phases).
+ * A chat message. Phase 2.2A supported `text` only; Phase 4 adds `image` / `file`
+ * (carrying attachments — see Attachment entity). `audio`/`video`/`system` remain
+ * out of scope.
  *
  * FK conversationId -> conversations, FK senderId -> users. The (conversationId,
  * created_at) index supports cursor-based history pagination.
@@ -18,6 +21,15 @@ export type MessageType = 'text';
  * it. In a 1:1 conversation the recipient is exactly the non-sender member, so a
  * single column suffices — no `message_reads` table. Null = unread. Server-
  * generated only (never trusted from the client).
+ *
+ * `recalledAt` / `editedAt` (Phase 3.5, nullable) are server-generated markers:
+ * - recalledAt != null  -> the sender recalled the message. `content` KEEPS the
+ *   original text in the DB (audit), but every public projection must blank it
+ *   out (see `toMessageView`) so no transport can leak it.
+ * - editedAt != null    -> the sender edited the message in place; `content`
+ *   holds the latest text. No edit history is stored (by design).
+ * Neither has a time window (recall/edit are allowed forever) and neither is
+ * indexed (both are read as part of an already-located row).
  */
 @Entity('messages')
 export class Message {
@@ -42,4 +54,23 @@ export class Message {
   /** Recipient read timestamp (set by ConversationsService.markRead). Null = unread. */
   @Column({ type: 'datetime', name: 'read_at', nullable: true })
   readAt: Date | null;
+
+  /**
+   * Recall timestamp (set by ConversationsService.recallMessage). Null = not
+   * recalled. Original `content` is deliberately preserved in the DB; public
+   * views blank it.
+   */
+  @Column({ type: 'datetime', name: 'recalled_at', nullable: true })
+  recalledAt: Date | null;
+
+  /** Last edit timestamp (set by ConversationsService.editMessage). Null = never edited. */
+  @Column({ type: 'datetime', name: 'edited_at', nullable: true })
+  editedAt: Date | null;
+
+  /** Phase 4: 1:N attachments (image/file messages). Lazy relation, NOT eager —
+   *  only populated when the query joins it (sendMessage reload, getMessages). */
+  @OneToMany('Attachment', (attachment: Attachment) => attachment.message, {
+    nullable: true,
+  })
+  attachments?: Attachment[];
 }

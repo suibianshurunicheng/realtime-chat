@@ -28,6 +28,19 @@ interface ChatState {
     upToMessageId: string | null;
     readAt: string;
   }) => void;
+  /** Phase 3.5: a message was recalled (server event `message_recalled`). */
+  applyMessageRecalled: (p: {
+    conversationId: string;
+    messageId: string;
+    recalledAt: string;
+  }) => void;
+  /** Phase 3.5: a message was edited in place (server event `message_edited`). */
+  applyMessageEdited: (p: {
+    conversationId: string;
+    messageId: string;
+    content: string;
+    editedAt: string;
+  }) => void;
   markHasMore: (convId: string, hasMore: boolean) => void;
   setLoadingConversations: (v: boolean) => void;
   setLoadingMessages: (v: boolean) => void;
@@ -117,6 +130,82 @@ export const useChatStore = create<ChatState>((set) => ({
       });
       if (!changed) return s;
       return { messagesByConv: { ...s.messagesByConv, [conversationId]: next } };
+    }),
+
+  /**
+   * Phase 3.5 recall. Patches the message in place (by id) and keeps the
+   * conversation-list preview in sync, so the list and the thread can never
+   * disagree about what was recalled.
+   *
+   * Rules: the body is blanked locally too (defence in depth — the server
+   * already redacts it, the UI renders a placeholder off `recalledAt`); an
+   * unknown id is a silent no-op (never inserts a stub row); re-applying the
+   * same recall changes nothing; `unreadByConv` is deliberately untouched — a
+   * recall is not a new message and must not shift unread counters.
+   */
+  applyMessageRecalled: ({ conversationId, messageId, recalledAt }) =>
+    set((s) => {
+      const patch = (m: Message): Message =>
+        m.recalledAt ? m : { ...m, recalledAt, content: '' };
+
+      const list = s.messagesByConv[conversationId];
+      let nextList = list;
+      if (list) {
+        const idx = list.findIndex((m) => m.id === messageId);
+        if (idx >= 0 && !list[idx].recalledAt) {
+          nextList = [...list];
+          nextList[idx] = patch(list[idx]);
+        }
+      }
+
+      const last = s.lastMessageByConv[conversationId];
+      const nextLast =
+        last && last.id === messageId && !last.recalledAt ? patch(last) : last;
+
+      if (nextList === list && nextLast === last) return s; // unknown id / already applied
+      return {
+        messagesByConv: nextList === list ? s.messagesByConv : { ...s.messagesByConv, [conversationId]: nextList! },
+        lastMessageByConv:
+          nextLast === last ? s.lastMessageByConv : { ...s.lastMessageByConv, [conversationId]: nextLast },
+      };
+    }),
+
+  /**
+   * Phase 3.5 edit. Overwrites `content` and stamps `editedAt` on the existing
+   * row (and on the preview when it is the same message). A recalled message is
+   * never re-shown: if the local copy is already recalled the edit is ignored
+   * (the server rejects it too, this only guards a reordered delivery).
+   * Unknown id = no-op; `unreadByConv` and `readAt` are untouched.
+   */
+  applyMessageEdited: ({ conversationId, messageId, content, editedAt }) =>
+    set((s) => {
+      const patch = (m: Message): Message =>
+        m.recalledAt || (m.content === content && m.editedAt === editedAt)
+          ? m
+          : { ...m, content, editedAt };
+
+      const list = s.messagesByConv[conversationId];
+      let nextList = list;
+      if (list) {
+        const idx = list.findIndex((m) => m.id === messageId);
+        if (idx >= 0) {
+          const patched = patch(list[idx]);
+          if (patched !== list[idx]) {
+            nextList = [...list];
+            nextList[idx] = patched;
+          }
+        }
+      }
+
+      const last = s.lastMessageByConv[conversationId];
+      const nextLast = last && last.id === messageId ? patch(last) : last;
+
+      if (nextList === list && nextLast === last) return s;
+      return {
+        messagesByConv: nextList === list ? s.messagesByConv : { ...s.messagesByConv, [conversationId]: nextList! },
+        lastMessageByConv:
+          nextLast === last ? s.lastMessageByConv : { ...s.lastMessageByConv, [conversationId]: nextLast },
+      };
     }),
 
   markHasMore: (convId, hasMore) =>

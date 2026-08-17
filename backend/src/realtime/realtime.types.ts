@@ -17,11 +17,12 @@ export interface SocketUser {
  * Socket event naming rules (documented contract — NOT enforced in code)
  * ------------------------------------------------------------------ *
  *  - Server -> Client events describe a fact in the past tense:
- *      `noun_past`  e.g. message_created, messages_read, typing_changed,
- *                    presence_changed, friend_presence_snapshot
+ *      `noun_past`  e.g. message_created, messages_read, message_recalled,
+ *                    message_edited, typing_changed, presence_changed,
+ *                    friend_presence_snapshot
  *  - Client -> Server events describe an intent in the imperative:
- *      `verb_object`  e.g. send_message, read_messages, typing_start,
- *                     typing_stop
+ *      `verb_object`  e.g. send_message, read_messages, recall_message,
+ *                     edit_message, typing_start, typing_stop
  *  - The error channel is a single S->C event: `message_error`.
  *
  * Existing event names are FROZEN — do not rename them (that would be a
@@ -29,9 +30,9 @@ export interface SocketUser {
  * above.
  *
  * Error-handling rules (documented contract):
- *  - BUSINESS events (send_message / read_messages) report failures to the
- *    originating socket ONLY, via the `message_error` event. The broadcast
- *    path never throws to the room.
+ *  - BUSINESS events (send_message / read_messages / recall_message /
+ *    edit_message) report failures to the originating socket ONLY, via the
+ *    `message_error` event. The broadcast path never throws to the room.
  *  - EPHEMERAL events (typing_start / typing_stop) fail silently: an invalid
  *    or unauthorized payload is dropped (no error event, no broadcast). They
  *    carry no business state, so there is nothing to report.
@@ -78,3 +79,24 @@ export const READ_MESSAGES_EVENT = 'read_messages';
 
 /** Server -> Client: a read receipt — `byUserId` read the OTHER party's messages. */
 export const MESSAGES_READ_EVENT = 'messages_read';
+
+/** Client -> Server: the sender recalls (unsends) their own message. */
+export const RECALL_MESSAGE_EVENT = 'recall_message';
+
+/** Client -> Server: the sender edits their own message in place. */
+export const EDIT_MESSAGE_EVENT = 'edit_message';
+
+/**
+ * Server -> Client: a message was recalled. Payload = the full `MessageView`
+ * with `recalledAt` set and `content` redacted. Broadcast to the whole room
+ * INCLUDING the sender (like `message_created`): both ends adopt the server
+ * result rather than guessing locally.
+ */
+export const MESSAGE_RECALLED_EVENT = 'message_recalled';
+
+/**
+ * Server -> Client: a message was edited. Payload = the full `MessageView` with
+ * the new `content` and `editedAt` set. Broadcast to the whole room INCLUDING
+ * the sender, for the same reason as `message_recalled`.
+ */
+export const MESSAGE_EDITED_EVENT = 'message_edited';

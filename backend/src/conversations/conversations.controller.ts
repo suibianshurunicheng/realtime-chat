@@ -13,6 +13,7 @@ import { ConversationsService } from './conversations.service';
 import { CreateDirectDto } from './dto/create-direct.dto';
 import { SendMessageDto } from './dto/send-message.dto';
 import { MarkReadDto } from './dto/mark-read.dto';
+import { toMessageView } from './message.view';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 
 @Controller('conversations')
@@ -53,10 +54,13 @@ export class ConversationsController {
     return this.conversations.getMessages(this.me(req), id, limit, before);
   }
 
-  /** Send a text message. senderId is forced to the authenticated user. */
+  /** Send a message (text or media). senderId is forced to the authenticated user. */
   @Post(':id/messages')
-  send(@Req() req: Request, @Param('id') id: string, @Body() dto: SendMessageDto) {
-    return this.conversations.sendMessage(this.me(req), id, dto.content);
+  async send(@Req() req: Request, @Param('id') id: string, @Body() dto: SendMessageDto) {
+    const msg = await this.conversations.sendMessage(this.me(req), id, dto);
+    // Single serialization point — identical shape to the Socket.IO path
+    // (attachments / url / recall redaction all flow through toMessageView).
+    return toMessageView(msg);
   }
 
   /** Phase 3.4 read receipt (REST fallback; the socket is the primary path).

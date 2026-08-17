@@ -6,10 +6,10 @@ const me = '1';
 const other = '2';
 
 const build = (): Message[] => [
-  { id: '10', conversationId: 'c1', senderId: other, type: 'text', content: 'a', createdAt: '', readAt: null },
-  { id: '11', conversationId: 'c1', senderId: me, type: 'text', content: 'b', createdAt: '', readAt: null },
-  { id: '12', conversationId: 'c1', senderId: other, type: 'text', content: 'c', createdAt: '', readAt: null },
-  { id: '13', conversationId: 'c1', senderId: me, type: 'text', content: 'd', createdAt: '', readAt: null },
+  { id: '10', conversationId: 'c1', senderId: other, type: 'text', content: 'a', createdAt: '', readAt: null, recalledAt: null, editedAt: null },
+  { id: '11', conversationId: 'c1', senderId: me, type: 'text', content: 'b', createdAt: '', readAt: null, recalledAt: null, editedAt: null },
+  { id: '12', conversationId: 'c1', senderId: other, type: 'text', content: 'c', createdAt: '', readAt: null, recalledAt: null, editedAt: null },
+  { id: '13', conversationId: 'c1', senderId: me, type: 'text', content: 'd', createdAt: '', readAt: null, recalledAt: null, editedAt: null },
 ];
 
 describe('chat store applyReadReceipt (Phase 3.4)', () => {
@@ -86,8 +86,8 @@ describe('chat store applyReadReceipt (Phase 3.4)', () => {
   it('compares ids numerically (BigInt), not as strings', () => {
     // "9" < "10" lexicographically but 9 < 10 numerically. upTo="10" must include id10.
     const list: Message[] = [
-      { id: '9', conversationId: 'c1', senderId: other, type: 'text', content: 'x', createdAt: '', readAt: null },
-      { id: '10', conversationId: 'c1', senderId: other, type: 'text', content: 'y', createdAt: '', readAt: null },
+      { id: '9', conversationId: 'c1', senderId: other, type: 'text', content: 'x', createdAt: '', readAt: null, recalledAt: null, editedAt: null },
+      { id: '10', conversationId: 'c1', senderId: other, type: 'text', content: 'y', createdAt: '', readAt: null, recalledAt: null, editedAt: null },
     ];
     useChatStore.getState().setMessages('c1', list);
     useChatStore.getState().applyReadReceipt({
