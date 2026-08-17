@@ -9,6 +9,8 @@ import type {
   SocketErrorPayload,
   FriendPresenceSnapshotPayload,
   PresenceUser,
+  MessageRecalledPayload,
+  MessageEditedPayload,
 } from '../types/chat';
 
 /**
@@ -65,6 +67,27 @@ function attach(s: Socket): void {
       readAt: typeof p.readAt === 'string' ? p.readAt : new Date().toISOString(),
     });
   });
+
+  // Recall / edit (Phase 3.5): the server broadcasts these to the whole room
+  // INCLUDING the actor, so both ends converge on the server result — there is
+  // no optimistic local mutation anywhere in the recall/edit path.
+  s.off('message_recalled').on('message_recalled', (p: MessageRecalledPayload) => {
+    if (!p?.conversationId || !p?.id) return;
+    chat().applyMessageRecalled({
+      conversationId: p.conversationId,
+      messageId: p.id,
+      recalledAt: typeof p.recalledAt === 'string' ? p.recalledAt : new Date().toISOString(),
+    });
+  });
+  s.off('message_edited').on('message_edited', (p: MessageEditedPayload) => {
+    if (!p?.conversationId || !p?.id) return;
+    chat().applyMessageEdited({
+      conversationId: p.conversationId,
+      messageId: p.id,
+      content: typeof p.content === 'string' ? p.content : '',
+      editedAt: typeof p.editedAt === 'string' ? p.editedAt : new Date().toISOString(),
+    });
+  });
 }
 
 /** Connect (idempotent singleton). Returns the existing socket if already created. */
@@ -94,10 +117,17 @@ export function getSocket(): Socket | null {
   return socket;
 }
 
-/** Emit send_message. The server echoes message_created to the room (incl. sender). */
-export function sendSocketMessage(conversationId: string, content: string): void {
+/** Emit send_message. The server echoes message_created to the room (incl. sender).
+ *  For media, pass the staged `attachmentIds`; `type` is optional (the server
+ *  normalizes it from the attachments, but we send it for clarity). */
+export function sendSocketMessage(
+  conversationId: string,
+  content: string,
+  attachmentIds?: string[],
+  type?: 'text' | 'image' | 'file',
+): void {
   if (!socket) return;
-  socket.emit('send_message', { conversationId, content });
+  socket.emit('send_message', { conversationId, content, attachmentIds, type });
 }
 
 /** Tell the server the local user started typing in `conversationId`. */
@@ -118,4 +148,22 @@ export function emitTypingStop(conversationId: string): void {
 export function emitRead(conversationId: string, upToMessageId?: string): void {
   if (!socket) return;
   socket.emit('read_messages', { conversationId, upToMessageId });
+}
+
+/** Phase 3.5: ask the server to recall one of MY messages. No optimistic update —
+ *  the UI only changes when `message_recalled` comes back. */
+export function emitRecallMessage(conversationId: string, messageId: string): void {
+  if (!socket) return;
+  socket.emit('recall_message', { conversationId, messageId });
+}
+
+/** Phase 3.5: ask the server to edit one of MY messages in place. No optimistic
+ *  update — the UI only changes when `message_edited` comes back. */
+export function emitEditMessage(
+  conversationId: string,
+  messageId: string,
+  content: string,
+): void {
+  if (!socket) return;
+  socket.emit('edit_message', { conversationId, messageId, content });
 }

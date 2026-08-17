@@ -516,6 +516,142 @@ a {
   color: rgba(255, 255, 255, 0.85);
 }
 
+/* ---- Phase 3.5: recall / edit ---- */
+
+.msg-bubble {
+  position: relative; /* anchor for the hover action bar */
+}
+
+/* A recalled bubble loses its accent colour — it carries no content any more. */
+.msg-bubble[data-recalled='true'],
+.msg-row[data-mine='true'] .msg-bubble[data-recalled='true'] {
+  background: #f1f3f7;
+  color: #9aa1b1;
+  box-shadow: none;
+}
+
+.msg-recalled {
+  font-size: 13px;
+  font-style: italic;
+  line-height: 1.45;
+}
+
+.msg-edited {
+  font-size: 11px;
+  opacity: 0.7;
+  color: #9aa1b1;
+}
+
+.msg-row[data-mine='true'] .msg-edited {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+/* Hover action bar (own messages only). Hidden by default on pointer devices,
+   revealed on hover/focus-within; always visible where hover doesn't exist. */
+.msg-actions {
+  position: absolute;
+  top: -10px;
+  right: 8px;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+
+.msg-bubble:hover .msg-actions,
+.msg-bubble:focus-within .msg-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+@media (hover: none) {
+  .msg-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+.msg-actions button {
+  border: 1px solid #d9dee8;
+  border-radius: 6px;
+  background: #fff;
+  color: #4b5566;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 7px;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(31, 36, 48, 0.08);
+}
+
+.msg-actions button:hover {
+  border-color: #3b6cff;
+  color: #3b6cff;
+}
+
+.msg-actions button:disabled {
+  color: #aeb5c2;
+  border-color: #e7eaf0;
+  cursor: default;
+}
+
+/* Inline edit box inside the bubble. */
+.msg-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 220px;
+}
+
+.msg-edit-input {
+  width: 100%;
+  min-height: 56px;
+  resize: vertical;
+  border: 1px solid #d9dee8;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 14px;
+  line-height: 1.45;
+  font-family: inherit;
+  color: #1f2430;
+  background: #fff;
+  box-sizing: border-box;
+}
+
+.msg-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.msg-edit-actions button {
+  border: 1px solid #d9dee8;
+  border-radius: 6px;
+  background: #fff;
+  color: #4b5566;
+  font-size: 12px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.msg-edit-actions button:first-child {
+  background: #3b6cff;
+  border-color: #3b6cff;
+  color: #fff;
+}
+
+.msg-edit-actions button:disabled {
+  background: #aebfe6;
+  border-color: #aebfe6;
+  color: #fff;
+  cursor: default;
+}
+
+.conv-preview[data-recalled='true'] {
+  font-style: italic;
+  opacity: 0.75;
+}
+
 .msg-input {
   display: flex;
   gap: 10px;
@@ -579,4 +715,217 @@ a {
     border-right: none;
     border-bottom: 1px solid #e7eaf0;
   }
+}
+
+/* ============================================================
+   Phase 4: image / file messages
+   ============================================================ */
+
+/* ---- MessageInput: upload tools + pending chips ---- */
+.msg-input {
+  flex-wrap: wrap;
+}
+
+.msg-input-tools {
+  display: flex;
+  gap: 6px;
+}
+
+.tool-btn {
+  border: 1px solid #d9dee8;
+  border-radius: 8px;
+  background: #fff;
+  color: #4b5566;
+  font-size: 13px;
+  padding: 0 14px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.tool-btn:hover {
+  border-color: #3b6cff;
+  color: #3b6cff;
+}
+
+.upload-chips {
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.upload-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 280px;
+  padding: 6px 8px 6px 12px;
+  border: 1px solid #e7eaf0;
+  border-radius: 8px;
+  background: #f7f9fc;
+  font-size: 12px;
+  color: #4b5566;
+}
+
+.upload-chip.status-error {
+  border-color: #f3c2c2;
+  background: #fdf0f0;
+  color: #d23b3b;
+}
+
+.upload-chip .chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 140px;
+}
+
+.upload-chip .chip-size {
+  color: #9aa1b1;
+  flex-shrink: 0;
+}
+
+.upload-chip .chip-progress {
+  color: #3b6cff;
+  flex-shrink: 0;
+}
+
+.upload-chip .chip-error {
+  flex-shrink: 0;
+  font-weight: 600;
+}
+
+.upload-chip .chip-done {
+  color: #18a058;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.upload-chip .chip-remove {
+  border: none;
+  background: transparent;
+  color: #9aa1b1;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.upload-chip .chip-remove:hover {
+  color: #d23b3b;
+}
+
+/* ---- MessageList: attachments (image thumbnail + file card) ---- */
+.msg-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+/* image thumbnail */
+.msg-image {
+  display: block;
+  padding: 0;
+  border: none;
+  background: transparent;
+  border-radius: 10px;
+  overflow: hidden;
+  cursor: zoom-in;
+  max-width: 220px;
+  max-height: 220px;
+  line-height: 0;
+}
+
+.msg-image img {
+  display: block;
+  max-width: 220px;
+  max-height: 220px;
+  object-fit: cover;
+  border-radius: 10px;
+}
+
+.msg-image .img-loading,
+.msg-image .img-error {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 120px;
+  height: 80px;
+  padding: 0 12px;
+  font-size: 12px;
+  color: #9aa1b1;
+  background: #f1f3f7;
+  border-radius: 10px;
+  line-height: 1.3;
+}
+
+.msg-image .img-error {
+  color: #d23b3b;
+}
+
+/* file download card */
+.msg-file-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 220px;
+  padding: 10px 12px;
+  border: 1px solid #e7eaf0;
+  border-radius: 10px;
+  background: #fff;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.msg-file-card:hover {
+  border-color: #3b6cff;
+  box-shadow: 0 2px 6px rgba(31, 36, 48, 0.08);
+}
+
+.msg-file-card .file-icon {
+  font-size: 22px;
+  flex-shrink: 0;
+}
+
+.msg-file-card .file-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.msg-file-card .file-name {
+  font-size: 13px;
+  color: #1f2430;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.msg-file-card .file-size {
+  font-size: 11px;
+  color: #9aa1b1;
+}
+
+/* image preview modal */
+.img-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 18, 28, 0.82);
+  cursor: zoom-out;
+}
+
+.img-modal img {
+  max-width: 90vw;
+  max-height: 90vh;
+  border-radius: 8px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
 }
